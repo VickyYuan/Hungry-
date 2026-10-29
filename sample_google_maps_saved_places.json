@@ -1,0 +1,106 @@
+{
+  "type": "FeatureCollection",
+  "features": [
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [120.6445, 24.1632]
+      },
+      "properties": {
+        "Title": "一蘭拉麵 台中中港店",
+        "Location": {
+          "Address": "台灣台中市西屯區台灣大道二段999號",
+          "Business Name": "一蘭拉麵 台中中港店",
+          "Country Code": "TW",
+          "Geo Coordinates": {
+            "Latitude": 24.1632,
+            "Longitude": 120.6445
+          }
+        },
+        "Google Maps URL": "https://maps.google.com/?cid=987654321",
+        "Comment": "每次必點：特濃湯頭＋特製辣醬！宵夜想吃拉麵第一名"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [120.6382, 24.1585]
+      },
+      "properties": {
+        "Title": "春水堂 台中市政店",
+        "Location": {
+          "Address": "台灣台中市西屯區市政路583號",
+          "Business Name": "春水堂 人文茶館",
+          "Geo Coordinates": {
+            "Latitude": 24.1585,
+            "Longitude": 120.6382
+          }
+        },
+        "Google Maps URL": "https://maps.google.com/?cid=123456789",
+        "Comment": "珍珠奶茶始祖！蘿蔔糕跟米血也是必點"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [120.6072, 24.1914]
+      },
+      "properties": {
+        "Title": "屋馬燒肉 國安店",
+        "Location": {
+          "Address": "台灣台中市西屯區國安一路168號B1",
+          "Business Name": "屋馬燒肉 國安店",
+          "Geo Coordinates": {
+            "Latitude": 24.1914,
+            "Longitude": 120.6072
+          }
+        },
+        "Google Maps URL": "https://maps.google.com/?cid=555666777",
+        "Comment": "慶生聚會首選！雞湯無限續喝，肉品品質極高"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [120.2541, 22.9567]
+      },
+      "properties": {
+        "Title": "阿裕牛肉涮涮鍋 崑崙店",
+        "Location": {
+          "Address": "台灣台南市仁德區崑崙路733-1號",
+          "Business Name": "阿裕牛肉涮涮鍋",
+          "Geo Coordinates": {
+            "Latitude": 22.9567,
+            "Longitude": 120.2541
+          }
+        },
+        "Google Maps URL": "https://maps.google.com/?cid=888999000",
+        "Comment": "台南必吃溫體牛，濃郁牛骨湯頭超清甜"
+      }
+    },
+    {
+      "type": "Feature",
+      "geometry": {
+        "type": "Point",
+        "coordinates": [120.6429, 24.1648]
+      },
+      "properties": {
+        "Title": "鼎泰豐 台中大遠百店",
+        "Location": {
+          "Address": "台灣台中市西屯區台灣大道三段251號B2",
+          "Business Name": "鼎泰豐",
+          "Geo Coordinates": {
+            "Latitude": 24.1648,
+            "Longitude": 120.6429
+          }
+        },
+        "Google Maps URL": "https://maps.google.com/?cid=111222333",
+        "Comment": "米其林推薦，排骨炒飯與小籠包無可挑剔"
+      }
+    }
+  ]
+}

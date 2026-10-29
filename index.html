@@ -1,0 +1,661 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>吃什麼？- 奶油系簡約可愛美食抽籤與 Google Maps 探索</title>
+  <meta name="description" content="連結真實 Google Maps 與個人收藏名單的可愛奶油風美食抽選助手。支援隨機抽籤、排除最近吃過、餐廳搜尋、用餐日誌與偏好自訂！">
+  
+  <!-- Google Fonts: Outfit & Noto Sans TC -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700;800;900&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
+  
+  <!-- Leaflet CSS for Interactive Real Maps -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
+  
+  <!-- App Stylesheet -->
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body data-theme="cream">
+
+  <!-- 慶祝彩帶畫布 -->
+  <canvas id="confettiCanvas"></canvas>
+
+  <div class="device-preview-wrapper">
+    <!-- 頂部輔助資訊列 (版型切換、音效開關) -->
+    <div class="top-utility-bar">
+      <div class="utility-left">
+        <span class="brand-badge">🐱 A. 奶油系簡約可愛</span>
+        <span style="color: var(--text-muted); font-size: 0.8rem; display: none; @media(min-width: 600px){display: inline;}">
+          溫柔奶油色調，支援真實 Google Maps 導航與口袋名單匯入
+        </span>
+      </div>
+      <div class="utility-right">
+        <button id="btnToggleSound" class="btn-pill-toggle" title="切換音效">
+          🔔 音效：開
+        </button>
+        <button id="btnToggleDeviceFrame" class="btn-pill-toggle active" title="切換手機與電腦模式">
+          📱 切換手機外框預覽
+        </button>
+      </div>
+    </div>
+
+    <!-- 主要裝置框架容器 (支援電腦全螢幕 與 手機外框模式) -->
+    <div class="device-frame">
+      <!-- 手機頂部瀏海 (僅在手機外框模式出現) -->
+      <div class="phone-notch"></div>
+
+      <!-- 主導覽 Header -->
+      <header class="main-header">
+        <div class="header-inner">
+          <div class="brand-logo-group" onclick="document.querySelector('.nav-tab-btn[data-tab=\'home\']').click()">
+            <div class="brand-mascot-icon">🐱</div>
+            <div>
+              <h1 class="brand-title">吃什麼<span>？</span></h1>
+              <span class="brand-subtitle">今天的美食命運指引</span>
+            </div>
+          </div>
+
+          <!-- 電腦版導覽分頁列 -->
+          <nav>
+            <ul class="nav-tab-list">
+              <li>
+                <button class="nav-tab-btn active" data-tab="home">
+                  <span class="nav-tab-icon">⌂</span> 首頁：隨機抽選
+                </button>
+              </li>
+              <li>
+                <button class="nav-tab-btn" data-tab="explore">
+                  <span class="nav-tab-icon">🔍</span> 探索：按尋餐廳
+                </button>
+              </li>
+              <li>
+                <button class="nav-tab-btn" data-tab="favorites">
+                  <span class="nav-tab-icon">🤍</span> 收藏：口袋名單
+                </button>
+              </li>
+              <li>
+                <button class="nav-tab-btn" data-tab="history">
+                  <span class="nav-tab-icon">📋</span> 紀錄：吃過的餐廳
+                </button>
+              </li>
+              <li>
+                <button class="nav-tab-btn" data-tab="settings">
+                  <span class="nav-tab-icon">⚙️</span> 設定：個人化偏好
+                </button>
+              </li>
+            </ul>
+          </nav>
+        </div>
+      </header>
+
+      <!-- 主要內容分頁區域 -->
+      <main class="main-content">
+
+        <!-- ========================================================
+             PAGE 1: 首頁 (隨機抽選)
+             ======================================================== -->
+        <section id="tab-home" class="tab-panel active">
+          <div class="home-layout">
+            <!-- 左側：篩選條件與大抽籤按鈕 -->
+            <div class="panel-card">
+              <div class="card-header-row">
+                <div class="card-title-group">
+                  <span style="font-size: 1.4rem;">🎯</span>
+                  <h2 class="card-title">今天想怎麼吃？</h2>
+                </div>
+                <!-- 雲端店家 vs 口袋名單切換 -->
+                <div class="toggle-switch-pills">
+                  <button class="pill-switch-btn home-source-pill active" data-source="cloud">雲端中的店家</button>
+                  <button class="pill-switch-btn home-source-pill" data-source="favs">我的口袋名單</button>
+                </div>
+              </div>
+
+              <!-- 排除吃過的快捷開關 -->
+              <div style="display: flex; align-items: center; justify-content: space-between; background: var(--bg-secondary); padding: 10px 14px; border-radius: var(--radius-md); margin-bottom: 18px;">
+                <span style="font-size: 0.88rem; font-weight: 700; color: var(--text-main);">
+                  🛡️ 排除吃過的餐廳規則
+                </span>
+                <button id="pillExcludeEaten" class="pill-switch-btn active" style="font-size: 0.8rem; background: var(--accent-subtle); color: var(--accent-color);">
+                  已啟用 (7天內不重複)
+                </button>
+              </div>
+
+              <!-- 篩選表單 Grid -->
+              <div class="filter-grid">
+                <div class="filter-item">
+                  <label for="filterArea">📍 地區</label>
+                  <select id="filterArea" class="filter-select">
+                    <option value="全部">全部地區</option>
+                    <option value="西屯區" selected>西屯區</option>
+                    <option value="西區">西區</option>
+                    <option value="北區">北區</option>
+                    <option value="南屯區">南屯區</option>
+                    <option value="仁德區">仁德區 (台南)</option>
+                  </select>
+                </div>
+
+                <div class="filter-item">
+                  <label for="filterBudget">💰 預算 (每人)</label>
+                  <select id="filterBudget" class="filter-select">
+                    <option value="不限">不限預算</option>
+                    <option value="100-200">100 - 200 元</option>
+                    <option value="150-250" selected>150 - 250 元</option>
+                    <option value="300-500">300 - 500 元</option>
+                    <option value="500以上">500 元以上</option>
+                  </select>
+                </div>
+
+                <div class="filter-item">
+                  <label for="filterCategory">🍲 料理類別</label>
+                  <select id="filterCategory" class="filter-select">
+                    <option value="全部">不限種類</option>
+                    <option value="日式">日式料理</option>
+                    <option value="義式">義大利麵/披薩</option>
+                    <option value="中式">中式合菜/小吃</option>
+                    <option value="韓式">正宗韓式</option>
+                    <option value="美式">美式漢堡</option>
+                    <option value="火鍋">暖心火鍋</option>
+                    <option value="飲品・輕食">飲品與輕食</option>
+                  </select>
+                </div>
+
+                <div class="filter-item">
+                  <label for="filterPayment">💳 付款方式</label>
+                  <select id="filterPayment" class="filter-select">
+                    <option value="全部">不限方式</option>
+                    <option value="Line Pay">Line Pay / 行動支付</option>
+                    <option value="信用卡">信用卡</option>
+                    <option value="現金">僅現金</option>
+                  </select>
+                </div>
+
+                <div class="filter-item">
+                  <label for="filterMealTime">⏰ 用餐時間</label>
+                  <select id="filterMealTime" class="filter-select">
+                    <option value="早餐">早餐晨光</option>
+                    <option value="午餐" selected>午餐好食</option>
+                    <option value="晚餐">晚餐時光</option>
+                    <option value="宵夜">深夜宵夜</option>
+                  </select>
+                </div>
+
+                <div class="filter-item">
+                  <label for="filterRating">⭐ 店家品質</label>
+                  <select id="filterRating" class="filter-select">
+                    <option value="0">不限評分</option>
+                    <option value="4.0" selected>4.0 星以上</option>
+                    <option value="4.5">4.5 星極上好評</option>
+                  </select>
+                </div>
+              </div>
+
+              <!-- 抽籤主按鈕 -->
+              <button id="btnDrawFood" class="btn-draw-main">
+                <span class="dice-icon">🎲</span> 幫我抽一家！
+              </button>
+            </div>
+
+            <!-- 右側：命定美食卡片 或 滾動動畫展示區 -->
+            <div class="destiny-card-container">
+              <div class="destiny-banner">
+                <span>✨</span>
+                <span>今天的命定美食是...</span>
+              </div>
+
+              <!-- 抽籤中過渡動畫框 -->
+              <div id="destinyRollingBox" class="destiny-rolling-box">
+                <div class="rolling-mascot" style="background: white; display: flex; align-items: center; justify-content: center; font-size: 3rem; box-shadow: var(--shadow-md);">
+                  🐱🍜
+                </div>
+                <div id="rollingTickerText" class="rolling-ticker-text">正在為你尋找命中註定的好料...</div>
+                <p style="font-size: 0.85rem; color: var(--text-muted);">正在依照權重篩選與排除吃過名單...</p>
+              </div>
+
+              <!-- 命定卡片內容 -->
+              <div id="destinyCardDisplay" class="destiny-card">
+                <div class="destiny-img-box">
+                  <img id="destinyImg" class="destiny-img" src="https://images.unsplash.com/photo-1621996346565-e3d5d6281788?w=700" alt="命定美食" loading="lazy">
+                  <div class="destiny-badge-status">
+                    <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success-color);"></span>
+                    營業中
+                  </div>
+                </div>
+
+                <div class="destiny-body">
+                  <div class="destiny-header-info">
+                    <div>
+                      <h3 id="destinyName" class="destiny-title">托斯卡尼尼 義大利餐廳</h3>
+                      <div class="destiny-rating-row">
+                        <span id="destinyRating" class="star-score">★ 4.5</span>
+                        <span id="destinyReviewCount" class="review-count">(1,234 則評論)</span>
+                        <span style="color: var(--text-light);">•</span>
+                        <span id="destinyArea" style="font-weight: 700; color: var(--text-muted);">西屯區</span>
+                        <span style="color: var(--text-light);">•</span>
+                        <span id="destinyPrice" style="color: var(--accent-color); font-weight: 800;">約 $220/人</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div id="destinyTags" class="destiny-meta-tags">
+                    <span class="meta-tag">#義式</span>
+                    <span class="meta-tag">#聚餐</span>
+                    <span class="meta-tag">#平價</span>
+                  </div>
+
+                  <p id="destinyDesc" class="destiny-desc">
+                    濃郁白醬海鮮義大利麵、窯烤披薩，份量豪邁且香氣撲鼻，聚會氣氛滿分！
+                  </p>
+
+                  <!-- 動作按鈕 -->
+                  <div class="destiny-actions">
+                    <button id="btnDestinyDetail" class="btn-card-action">
+                      🔍 查看詳細資訊
+                    </button>
+                    <button id="btnDestinyFavToggle" class="btn-card-action btn-accent">
+                      🤍 加入口袋名單
+                    </button>
+                    <button id="btnDestinyRecordEat" class="btn-card-action" style="grid-column: span 2;">
+                      📝 今天就吃這家！(記下美味日誌)
+                    </button>
+                    <!-- Google Maps 真實導航按鈕 -->
+                    <a id="btnDestinyGoogleNav" href="https://www.google.com/maps" target="_blank" class="btn-card-action btn-google-nav">
+                      🧭 在 Google Maps 中開啟導航與查看地標
+                    </a>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================
+             PAGE 2: 探索 (按尋餐廳 + 真實 Google Maps)
+             ======================================================== -->
+        <section id="tab-explore" class="tab-panel">
+          <div class="explore-layout">
+            <!-- 搜尋列與來源切換 -->
+            <div class="explore-search-bar-row">
+              <div class="search-input-wrap">
+                <span class="search-input-icon">🔍</span>
+                <input id="exploreSearchInput" type="text" class="explore-search-input" placeholder="搜尋餐廳、地區或料理類別 (例如：拉麵、逢甲、燒肉)...">
+              </div>
+              <div class="source-switch-pill">
+                <button class="pill-switch-btn explore-source-btn active" data-source="google">Google Maps</button>
+                <button class="pill-switch-btn explore-source-btn" data-source="myList">我的清單</button>
+              </div>
+            </div>
+
+            <!-- 快速過濾標籤列 -->
+            <div class="quick-filter-scroll-row">
+              <button class="pill-filter-chip active" data-filter="全部">全部餐廳</button>
+              <button class="pill-filter-chip" data-filter="distance">📍 距離最近 (&lt;2km)</button>
+              <button class="pill-filter-chip" data-filter="rating">⭐ 評分最高 (4.5+)</button>
+              <button class="pill-filter-chip" data-filter="price">💵 價格親民 (&lt;$250)</button>
+              <button class="pill-filter-chip" data-filter="日式">🍣 日式料理</button>
+              <button class="pill-filter-chip" data-filter="中式">🥟 中式美饌</button>
+              <button class="pill-filter-chip" data-filter="義式">🍝 義式風情</button>
+              <button class="pill-filter-chip" data-filter="韓式">🥩 韓式烤肉</button>
+              <button class="pill-filter-chip" data-filter="火鍋">🍲 暖胃鍋物</button>
+            </div>
+
+            <!-- 地圖與列表雙欄架構 -->
+            <div class="explore-split-view">
+              <!-- 左邊：真實互動地圖 (整合 Leaflet / Google Maps API) -->
+              <div class="map-container-card">
+                <div id="leafletMapContainer"></div>
+                <button id="btnRefreshMapArea" class="map-floating-overlay-btn">
+                  📍 重查此地圖範圍
+                </button>
+              </div>
+
+              <!-- 右邊：餐廳卡片滾動列表 -->
+              <div id="exploreRestaurantList" class="explore-list-scroll">
+                <!-- 由 JavaScript 動態渲染 -->
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================
+             PAGE 3: 收藏 (我的口袋名單)
+             ======================================================== -->
+        <section id="tab-favorites" class="tab-panel">
+          <div class="favorites-layout">
+            <!-- Google Maps 匯入提示橫幅 -->
+            <div class="google-import-banner">
+              <div class="banner-content">
+                <div class="banner-icon-box">🗺️</div>
+                <div class="banner-text">
+                  <h4>快速串接你的 Google Maps 帳號收藏清單！</h4>
+                  <p>支援匯入 Google Takeout 已儲存地點檔案 (.json / .csv / .geojson)，一鍵將私房名單加入抽籤池！</p>
+                </div>
+              </div>
+              <button id="btnBannerGoogleImport" class="btn-banner-cta">
+                🚀 立即匯入我的 Google 收藏
+              </button>
+            </div>
+
+            <!-- 分類標籤 (全部, 想吃, 聚餐, 平價, +新增清單) -->
+            <div id="favCategoriesRow" class="fav-categories-row">
+              <!-- 由 JavaScript 動態渲染 -->
+            </div>
+
+            <!-- 收藏卡片 Grid -->
+            <div id="favCardsGrid" class="fav-cards-grid">
+              <!-- 由 JavaScript 動態渲染 -->
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================
+             PAGE 4: 紀錄 (吃過的餐廳日記)
+             ======================================================== -->
+        <section id="tab-history" class="tab-panel">
+          <div class="history-layout">
+            <div class="history-top-row">
+              <div class="history-filter-pills">
+                <button class="pill-filter-chip hist-filter-pill active" data-filter="全部">全部紀錄</button>
+                <button class="pill-filter-chip hist-filter-pill" data-filter="month">本月</button>
+                <button class="pill-filter-chip hist-filter-pill" data-filter="quarter">本季</button>
+                <button class="pill-filter-chip hist-filter-pill" data-filter="year">今年</button>
+              </div>
+
+              <button id="btnAddHistoryEntry" class="btn-add-history-fab">
+                <span>＋</span> 記下一筆
+              </button>
+            </div>
+
+            <!-- 紀錄時間軸列表 -->
+            <div id="historyTimelineList" class="history-timeline">
+              <!-- 由 JavaScript 動態渲染 -->
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================
+             PAGE 5: 設定 (個人化偏好 & Google Maps 連結)
+             ======================================================== -->
+        <section id="tab-settings" class="tab-panel">
+          <div class="settings-layout">
+            <!-- 左欄：排除規則與偏好權重 -->
+            <div class="settings-card">
+              <h3 class="settings-card-title">
+                <span>🛡️</span> 抽籤排除規則
+              </h3>
+              
+              <div class="radio-list-group">
+                <label class="custom-radio-row">
+                  <input type="radio" name="excludeRule" value="7" checked>
+                  <span>不抽最近 7 天吃過的餐廳 (推薦)</span>
+                </label>
+                <label class="custom-radio-row">
+                  <input type="radio" name="excludeRule" value="30">
+                  <span>不抽最近 30 天吃過的餐廳</span>
+                </label>
+                <label class="custom-radio-row">
+                  <input type="radio" name="excludeRule" value="forever">
+                  <span>永久排除吃過的餐廳</span>
+                </label>
+                <label class="custom-radio-row">
+                  <input type="radio" name="excludeRule" value="none">
+                  <span>不排除任何吃過的餐廳</span>
+                </label>
+              </div>
+
+              <!-- 不想吃的料理/食材 (多選) -->
+              <div>
+                <span class="settings-group-label">🚫 不想吃的料理或食材 (自動排除)</span>
+                <div class="dislike-tag-cloud">
+                  <button class="tag-select-chip dislike-tag" data-value="火鍋">火鍋</button>
+                  <button class="tag-select-chip dislike-tag" data-value="海鮮">海鮮</button>
+                  <button class="tag-select-chip dislike-tag" data-value="牛肉">牛肉</button>
+                  <button class="tag-select-chip dislike-tag selected" data-value="內臟">內臟</button>
+                  <button class="tag-select-chip dislike-tag selected" data-value="生食">生食</button>
+                  <button class="tag-select-chip dislike-tag" data-value="素食">素食</button>
+                  <button class="tag-select-chip dislike-tag" data-value="甜食">甜食</button>
+                  <button class="tag-select-chip dislike-tag" data-value="辛辣">辛辣</button>
+                </div>
+              </div>
+
+              <!-- 偏好設定 (影響抽籤機率權重) -->
+              <div>
+                <span class="settings-group-label">🎚️ 料理偏好權重 (數值越高出現機率越大)</span>
+                <div class="weight-slider-list">
+                  <div class="slider-row">
+                    <span class="slider-label">日式</span>
+                    <input type="range" class="custom-slider cuisine-slider" data-cuisine="日式" min="1" max="10" value="5">
+                    <span id="val-日式" class="slider-val-badge">5x</span>
+                  </div>
+                  <div class="slider-row">
+                    <span class="slider-label">中式</span>
+                    <input type="range" class="custom-slider cuisine-slider" data-cuisine="中式" min="1" max="10" value="5">
+                    <span id="val-中式" class="slider-val-badge">5x</span>
+                  </div>
+                  <div class="slider-row">
+                    <span class="slider-label">韓式</span>
+                    <input type="range" class="custom-slider cuisine-slider" data-cuisine="韓式" min="1" max="10" value="4">
+                    <span id="val-韓式" class="slider-val-badge">4x</span>
+                  </div>
+                  <div class="slider-row">
+                    <span class="slider-label">義式</span>
+                    <input type="range" class="custom-slider cuisine-slider" data-cuisine="義式" min="1" max="10" value="4">
+                    <span id="val-義式" class="slider-val-badge">4x</span>
+                  </div>
+                  <div class="slider-row">
+                    <span class="slider-label">美式</span>
+                    <input type="range" class="custom-slider cuisine-slider" data-cuisine="美式" min="1" max="10" value="3">
+                    <span id="val-美式" class="slider-val-badge">3x</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 右欄：Google 連結專區、距離、主題、資料管理 -->
+            <div class="settings-card">
+              <h3 class="settings-card-title">
+                <span>🗺️</span> Google Maps 帳號收藏整合
+              </h3>
+
+              <!-- 整合精靈區塊 -->
+              <div class="google-connect-box">
+                <p class="google-step-desc">
+                  <strong>如何匯入 Google 地圖收藏名單？</strong><br>
+                  1. 前往 <a href="https://takeout.google.com" target="_blank" style="color: #4285F4; font-weight: 700;">Google Takeout (匯出)</a><br>
+                  2. 僅勾選「<strong>地圖 (已儲存的地點)</strong>」，選擇匯出格式為 JSON 或 CSV<br>
+                  3. 將下載的檔案上傳到下方，系統將自動解析店名、評分與導航連結！
+                </p>
+
+                <!-- 上傳區塊 -->
+                <div id="takeoutDropzone" class="google-file-dropzone">
+                  <p style="font-size: 1.5rem; margin-bottom: 4px;">📂</p>
+                  <p style="font-weight: 700; color: #1967D2;">點擊或拖曳上傳 Google 匯出的收藏檔案</p>
+                  <p style="font-size: 0.78rem; color: #5F6368;">支援 Saved Places.json, .geojson, .csv</p>
+                  <input type="file" id="fileInputTakeout" accept=".json,.geojson,.csv" style="display: none;">
+                </div>
+
+                <!-- 快速示範體驗 -->
+                <button id="btnLoadDemoGooglePlaces" class="btn-pill-toggle" style="justify-content: center; background: white; border: 1.5px solid #4285F4; color: #1967D2;">
+                  ⚡ 一鍵載入示範 Google 收藏清單 (體驗效果)
+                </button>
+              </div>
+
+              <!-- 預算範圍滑桿 -->
+              <div>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+                  <span class="settings-group-label" style="margin-bottom: 0;">💵 預算範圍 (每人)</span>
+                  <span id="budgetRangeDisplay" style="font-size: 0.85rem; font-weight: 700; color: var(--accent-color);">$100 - $250</span>
+                </div>
+                <input id="budgetRangeSlider" type="range" class="custom-slider" min="100" max="800" step="50" value="250" style="width: 100%;">
+              </div>
+
+              <!-- 搜尋推薦距離 -->
+              <div>
+                <span class="settings-group-label">🧭 推薦搜尋距離</span>
+                <div class="distance-pill-group">
+                  <button class="btn-dist-chip" data-dist="0.5">500 m</button>
+                  <button class="btn-dist-chip" data-dist="1">1 km</button>
+                  <button class="btn-dist-chip active" data-dist="3">3 km</button>
+                  <button class="btn-dist-chip" data-dist="5">5 km</button>
+                </div>
+              </div>
+
+              <!-- 主題配色 -->
+              <div>
+                <span class="settings-group-label">🎨 介面主題色</span>
+                <div class="theme-picker-row">
+                  <div class="theme-color-circle active" data-theme="cream" style="background: #E28743;" title="奶油柔 (預設)"></div>
+                  <div class="theme-color-circle" data-theme="strawberry" style="background: #E76F7C;" title="草莓牛奶"></div>
+                  <div class="theme-color-circle" data-theme="mint" style="background: #38A388;" title="薄荷蘇打"></div>
+                  <div class="theme-color-circle" data-theme="cocoa" style="background: #9C6644;" title="暖心可可"></div>
+                </div>
+              </div>
+
+              <!-- 資料備份管理 -->
+              <div>
+                <span class="settings-group-label">💾 資料備份與管理</span>
+                <div class="data-mgmt-btns-row">
+                  <button id="btnExportData" class="btn-mgmt">匯出資料</button>
+                  <button id="btnImportData" class="btn-mgmt">匯入資料</button>
+                  <button id="btnClearAllData" class="btn-mgmt danger">清除所有紀錄</button>
+                  <input type="file" id="fileInputImportData" accept=".json" style="display: none;">
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+      </main>
+
+      <!-- 手機版底部導覽列 (Mobile Bottom Navigation) -->
+      <nav class="mobile-bottom-nav">
+        <div class="mobile-nav-inner">
+          <button class="mobile-nav-item active" data-tab="home">
+            <span class="nav-icon">⌂</span>
+            <span>首頁</span>
+          </button>
+          <button class="mobile-nav-item" data-tab="explore">
+            <span class="nav-icon">🔍</span>
+            <span>探索</span>
+          </button>
+          <button class="mobile-nav-item" data-tab="favorites">
+            <span class="nav-icon">🤍</span>
+            <span>收藏</span>
+          </button>
+          <button class="mobile-nav-item" data-tab="history">
+            <span class="nav-icon">📋</span>
+            <span>紀錄</span>
+          </button>
+          <button class="mobile-nav-item" data-tab="settings">
+            <span class="nav-icon">⚙️</span>
+            <span>設定</span>
+          </button>
+        </div>
+      </nav>
+
+    </div>
+  </div>
+
+  <!-- ========================================================
+       彈窗：餐廳詳細資訊 Modal
+       ======================================================== -->
+  <div id="modalRestDetail" class="modal-overlay">
+    <div class="modal-card">
+      <button class="modal-close-btn">&times;</button>
+      <div style="height: 200px; border-radius: var(--radius-md); overflow: hidden; margin-bottom: 16px;">
+        <img id="detailModalImg" src="" style="width: 100%; height: 100%; object-fit: cover;" alt="餐廳照片">
+      </div>
+      <h3 id="detailModalTitle" style="font-size: 1.4rem; font-weight: 800; margin-bottom: 6px;"></h3>
+      <p id="detailModalRating" style="color: var(--star-color); font-weight: 700; margin-bottom: 4px;"></p>
+      <p id="detailModalPrice" style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 4px;"></p>
+      <p id="detailModalAddress" style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 4px;"></p>
+      <p id="detailModalHours" style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;"></p>
+      <p id="detailModalDesc" style="color: var(--text-main); line-height: 1.6; font-size: 0.92rem; margin-bottom: 20px;"></p>
+      <a id="detailModalGoogleLink" href="#" target="_blank" class="btn-card-action btn-google-nav" style="text-align: center; text-decoration: none;">
+        🧭 在 Google Maps 中開啟導航與查看地標
+      </a>
+    </div>
+  </div>
+
+  <!-- ========================================================
+       彈窗：新增美味歷史紀錄 Modal
+       ======================================================== -->
+  <div id="modalAddHistory" class="modal-overlay">
+    <div class="modal-card">
+      <button class="modal-close-btn">&times;</button>
+      <h3 style="font-size: 1.25rem; font-weight: 800; margin-bottom: 16px;">📝 記下一筆美味用餐日記</h3>
+      <form id="formAddHistory" style="display: flex; flex-direction: column; gap: 14px;">
+        <div>
+          <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 6px;">用餐店家</label>
+          <select id="addHistRestSelect" class="filter-select" required></select>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 6px;">用餐日期</label>
+            <input type="date" id="addHistDate" class="filter-select" required>
+          </div>
+          <div>
+            <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 6px;">花費金額 (NTD)</label>
+            <input type="number" id="addHistCost" class="filter-select" value="220" min="0" required>
+          </div>
+        </div>
+        <div>
+          <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 6px;">美味評分</label>
+          <select id="addHistRating" class="filter-select">
+            <option value="5">⭐⭐⭐⭐⭐ 超級美味，必吃！</option>
+            <option value="4.5">⭐⭐⭐⭐✨ 相當推薦</option>
+            <option value="4">⭐⭐⭐⭐ 還不錯，會再訪</option>
+            <option value="3">⭐⭐⭐ 普通，日常填飽肚子</option>
+          </select>
+        </div>
+        <div>
+          <label style="display: block; font-size: 0.85rem; font-weight: 700; margin-bottom: 6px;">美味心得筆記</label>
+          <textarea id="addHistNotes" class="filter-select" rows="3" placeholder="例如：湯頭很棒、肉質很鮮嫩，下次聚餐可以再來！"></textarea>
+        </div>
+        <button type="submit" class="btn-draw-main" style="padding: 12px; font-size: 1rem; margin-top: 10px;">
+          💾 儲存並納入排除規則
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ========================================================
+       彈窗：Google Maps 收藏匯入精靈 Modal
+       ======================================================== -->
+  <div id="modalGoogleImport" class="modal-overlay">
+    <div class="modal-card">
+      <button class="modal-close-btn">&times;</button>
+      <h3 style="font-size: 1.25rem; font-weight: 800; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+        <span style="color: #4285F4;">🗺️</span> Google Maps 收藏清單匯入指南
+      </h3>
+      <div style="font-size: 0.88rem; color: var(--text-main); line-height: 1.6; display: flex; flex-direction: column; gap: 10px;">
+        <p>因 Google 官方保護使用者隱私，未開放直接透過網頁 OAuth 即時讀取私人的 Google Maps 標星與儲存地點。但您可以透過 Google 官方的 <strong>Google 匯出 (Takeout)</strong> 匯出收藏檔！</p>
+        
+        <div style="background: var(--bg-secondary); padding: 12px; border-radius: var(--radius-md);">
+          <p><strong>只需 3 步驟：</strong></p>
+          <ol style="margin-left: 20px; font-size: 0.82rem; color: var(--text-muted);">
+            <li>前往 <a href="https://takeout.google.com" target="_blank" style="color: #4285F4; font-weight: 700;">Google Takeout 匯出頁面</a>。</li>
+            <li>取消全選，僅勾選「<strong>地圖 (已儲存的地點)</strong>」。</li>
+            <li>點擊建立匯出作業，下載並解壓縮出 <code>已儲存的地點.json</code> 或 CSV。</li>
+          </ol>
+        </div>
+
+        <button onclick="document.getElementById('fileInputTakeout').click()" class="btn-draw-main" style="padding: 12px; font-size: 1rem; background: #4285F4; box-shadow: 0 4px 12px rgba(66, 133, 244, 0.3);">
+          📂 選擇並上傳 Google 匯出檔案
+        </button>
+        <button onclick="loadDemoGoogleTakeout()" class="btn-pill-toggle" style="justify-content: center; padding: 10px;">
+          ⚡ 沒有檔案？點此一鍵載入示範 Google 收藏清單
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Leaflet JS (無需 API Key 的真實高精確圖台) -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  
+  <!-- App Data & Scripts -->
+  <script src="./data.js"></script>
+  <script src="./app.js"></script>
+</body>
+</html>

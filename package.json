@@ -1,0 +1,16 @@
+{
+  "name": "hungry",
+  "version": "1.0.0",
+  "description": "吃什麼？(What To Eat?) - 奶油系簡約可愛美食抽籤與真實 Google Maps 探索網頁",
+  "homepage": "https://github.com/VickyYuan/Hungry-#readme",
+  "keywords": [
+    "what-to-eat",
+    "google-maps",
+    "food-roulette",
+    "cute-ui",
+    "cream-style",
+    "vercel"
+  ],
+  "author": "VickyYuan",
+  "license": "MIT"
+}
