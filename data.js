@@ -1,4 +1,14 @@
-// 預設在地美食口袋名單資料庫（支援真實 Google Maps 座標與導航連結）
+// 台中市 29 個行政區共用常數清單
+window.TAICHUNG_DISTRICTS = [
+  '中區', '東區', '南區', '西區', '北區',
+  '北屯區', '西屯區', '南屯區', '太平區', '大里區',
+  '霧峰區', '烏日區', '豐原區', '后里區', '石岡區',
+  '東勢區', '和平區', '新社區', '潭子區', '大雅區',
+  '神岡區', '大肚區', '沙鹿區', '龍井區', '梧棲區',
+  '清水區', '大甲區', '外埔區', '大安區'
+];
+
+// 預設在地美食口袋名單資料庫（示範資料，標記 source: 'demo'）
 window.DEFAULT_RESTAURANTS = [
   {
     id: "rest-001",
@@ -289,6 +299,13 @@ window.DEFAULT_RESTAURANTS = [
     googlePlaceUrl: "https://www.google.com/maps/search/?api=1&query=瓦城+泰國料理+台中新光"
   }
 ];
+
+// 標註示範資料明確來源與行政區 (非真實驗證資料)
+window.DEFAULT_RESTAURANTS.forEach(r => {
+  r.source = 'demo';
+  r.isDemo = true;
+  r.district = r.district || r.area || '待確認地區';
+});
 
 // 預設吃過的紀錄歷史（供示範）
 window.DEFAULT_HISTORY = [

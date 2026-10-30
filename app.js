@@ -14,15 +14,13 @@ const AppState = {
   soundEnabled: true,
   currentWinner: null,
   
-  // 地圖相關
-  mapProvider: 'leaflet', // 'leaflet' | 'google'
-  mapInstance: null,
-  mapMarkers: [],
-  
   // 使用者偏好設定
   settings: {
     googleApiKey: '',
     excludeRule: '7', // '7' | '30' | 'forever' | 'none'
+    avoidConsecutivePicks: true, // 避免連續抽中同一家
+    includeUnratedPlaces: true,  // 未評分店家納入抽籤
+    unknownMealTimeRule: 'include', // 未知用餐時段之店家是否納入常規時段 (include / exclude)
     dislikes: ['內臟', '生食'],
     cuisineWeights: {
       '日式': 5,
@@ -36,15 +34,15 @@ const AppState = {
     },
     budgetMin: 150,
     budgetMax: 250,
-    maxDistanceKm: 3,
     theme: 'cream'
   },
   
   // 首頁抽籤條件
   homeFilter: {
-    source: 'cloud', // 'cloud' (全部雲端) | 'favs' (我的口袋名單)
+    source: 'cloud', // 'cloud' (全部店家名冊) | 'favs' (我的口袋名單)
     excludeEaten: true,
     area: '全部',
+    selectedDistricts: new Set(['全部']), // 多選行政區 Set
     budget: '150-250',
     category: '全部',
     payment: '全部',
@@ -55,9 +53,8 @@ const AppState = {
   // 探索搜尋條件
   exploreFilter: {
     query: '',
-    source: 'google', // 'google' | 'myList'
-    tag: '全部',
-    sortBy: 'distance'
+    source: 'all', // 'all' | 'myList'
+    tag: '全部'
   }
 };
 
@@ -123,10 +120,20 @@ const SoundEngine = {
 };
 
 // ==========================================================
-// 初始化與資料載入
+// 初始化與資料載入 (使用 IndexedDB 作為主要儲存，並支援安全遷移)
 // ==========================================================
-function initApp() {
-  loadDataFromStorage();
+async function initApp() {
+  try {
+    // 1. 初始化資料庫並檢查/執行從 localStorage 的安全遷移
+    await initDatabaseAndMigrate();
+
+    // 2. 從 IndexedDB 載入狀態
+    await loadDataFromIndexedDB();
+  } catch (err) {
+    console.error("初始化 IndexedDB 失敗，改用 localStorage 降級模式:", err);
+    loadDataFromStorageFallback();
+  }
+
   applyTheme(AppState.settings.theme);
   bindNavigationEvents();
   bindHomeEvents();
@@ -135,58 +142,118 @@ function initApp() {
   bindHistoryEvents();
   bindSettingsEvents();
   bindModals();
-  
-  // 渲染首頁與預設命定美食
-  renderHomeDestinyCard(AppState.restaurants[0] || null);
-  
-  // 初始化地圖
-  setTimeout(() => {
-    initMap();
-  }, 400);
 
-  console.log("吃什麼？App 初始化完成！");
+  // 初始化地區多選選單與即時候選計數
+  initDistrictSelector();
+  updateCandidateCountUI();
+
+  // 初始命定卡片設為引導未抽選狀態 (不再寫死指定第一家)
+  renderHomeDestinyCard(null);
+
+  // 更新遷移與備份狀態 UI
+  await updateMigrationUI();
+
+  console.log("吃什麼？App 初始化完成 (儲存引擎: IndexedDB)！");
 }
 
-// 從 LocalStorage 載入資料或預設值
-function loadDataFromStorage() {
-  try {
-    const savedRest = localStorage.getItem('WTE_restaurants');
-    if (savedRest) {
-      AppState.restaurants = JSON.parse(savedRest);
+// 初始化 IndexedDB 並自動檢查執行安全遷移
+async function initDatabaseAndMigrate() {
+  if (typeof DB === 'undefined') return;
+  await DB.open();
+  const status = await DB.getMigrationStatus();
+  if (!status.migrated) {
+    console.log("偵測到尚未遷移至 IndexedDB，開始執行安全遷移與備份...");
+    const result = await DB.migrateFromLocalStorage();
+    if (result.success) {
+      console.log("安全遷移完成！原 localStorage 原始資料已完整保留。");
+    } else {
+      console.error("遷移過程發生異常:", result.error);
+    }
+  }
+}
+
+// 從 IndexedDB 讀取最新資料 (Single Source of Truth 唯一真實資料來源)
+async function loadDataFromIndexedDB() {
+  if (typeof DB === 'undefined') return loadDataFromStorageFallback();
+
+  // 檢查資料庫是否已完成初始化標記
+  const initRecord = await DB.get('settings', 'initialized');
+  const isInitialized = initRecord && initRecord.value === true;
+
+  const places = await DB.getAll('places');
+  const hist = await DB.getAll('history');
+  const lists = await DB.getAll('lists');
+  const settingsRecord = await DB.get('settings', 'preferences');
+
+  if (isInitialized) {
+    // 已經初始化過：即使 places 為空，也是使用者的合法狀態（手動刪除），絕不誤判復活預設示範資料！
+    AppState.restaurants = places || [];
+    AppState.history = hist || [];
+    if (lists && lists.length > 0) {
+      AppState.customLists = lists.map(l => l.name);
+    }
+    if (settingsRecord && settingsRecord.value) {
+      AppState.settings = Object.assign(AppState.settings, settingsRecord.value);
+    }
+  } else {
+    // 尚未初始化 (全新環境首次啟動)
+    if (places && places.length > 0) {
+      AppState.restaurants = places;
     } else if (window.DEFAULT_RESTAURANTS) {
       AppState.restaurants = JSON.parse(JSON.stringify(window.DEFAULT_RESTAURANTS));
     }
 
-    const savedHist = localStorage.getItem('WTE_history');
-    if (savedHist) {
-      AppState.history = JSON.parse(savedHist);
+    if (hist && hist.length > 0) {
+      AppState.history = hist;
     } else if (window.DEFAULT_HISTORY) {
       AppState.history = JSON.parse(JSON.stringify(window.DEFAULT_HISTORY));
     }
 
-    const savedLists = localStorage.getItem('WTE_customLists');
-    if (savedLists) {
-      AppState.customLists = JSON.parse(savedLists);
+    if (lists && lists.length > 0) {
+      AppState.customLists = lists.map(l => l.name);
     }
 
-    const savedSettings = localStorage.getItem('WTE_settings');
-    if (savedSettings) {
-      AppState.settings = Object.assign(AppState.settings, JSON.parse(savedSettings));
+    if (settingsRecord && settingsRecord.value) {
+      AppState.settings = Object.assign(AppState.settings, settingsRecord.value);
     }
-  } catch (err) {
-    console.error("載入本機資料時發生錯誤：", err);
   }
 }
 
-// 儲存資料回 LocalStorage
-function saveDataToStorage() {
+// 降級載入 (僅在 IndexedDB 完全無法啟動時才作唯讀 fallback 讀取)
+function loadDataFromStorageFallback() {
   try {
-    localStorage.setItem('WTE_restaurants', JSON.stringify(AppState.restaurants));
-    localStorage.setItem('WTE_history', JSON.stringify(AppState.history));
-    localStorage.setItem('WTE_customLists', JSON.stringify(AppState.customLists));
-    localStorage.setItem('WTE_settings', JSON.stringify(AppState.settings));
+    const savedRest = localStorage.getItem('WTE_restaurants');
+    if (savedRest) AppState.restaurants = JSON.parse(savedRest);
+    else if (window.DEFAULT_RESTAURANTS) AppState.restaurants = JSON.parse(JSON.stringify(window.DEFAULT_RESTAURANTS));
+
+    const savedHist = localStorage.getItem('WTE_history');
+    if (savedHist) AppState.history = JSON.parse(savedHist);
+    else if (window.DEFAULT_HISTORY) AppState.history = JSON.parse(JSON.stringify(window.DEFAULT_HISTORY));
+
+    const savedLists = localStorage.getItem('WTE_customLists');
+    if (savedLists) AppState.customLists = JSON.parse(savedLists);
+
+    const savedSettings = localStorage.getItem('WTE_settings');
+    if (savedSettings) AppState.settings = Object.assign(AppState.settings, JSON.parse(savedSettings));
   } catch (err) {
-    console.error("寫入本機資料失敗：", err);
+    console.error("載入本機 localStorage 備用資料失敗:", err);
+  }
+}
+
+// 儲存資料回 IndexedDB (唯一正式資料來源；localStorage 已凍結為唯讀遷移備份，絕不再持續雙軌寫入)
+async function saveDataToStorage() {
+  if (typeof DB === 'undefined') {
+    throw new Error('IndexedDB 模組未載入，無法儲存！');
+  }
+
+  try {
+    await DB.bulkPut('places', AppState.restaurants);
+    await DB.bulkPut('history', AppState.history);
+    await DB.put('settings', { key: 'preferences', value: AppState.settings });
+  } catch (err) {
+    console.error("寫入 IndexedDB 失敗:", err);
+    alert("⚠️ 本機資料庫儲存發生異常：" + err.message + "\n請確認儲存空間是否足夠！");
+    throw err;
   }
 }
 
@@ -231,9 +298,6 @@ function bindNavigationEvents() {
     // 若切換到探索或收藏，重新整理視圖
     if (tabId === 'explore') {
       renderExploreList();
-      if (AppState.mapInstance && AppState.mapInstance.invalidateSize) {
-        setTimeout(() => AppState.mapInstance.invalidateSize(), 200);
-      }
     } else if (tabId === 'favorites') {
       renderFavoritesView();
     } else if (tabId === 'history') {
@@ -259,9 +323,6 @@ function bindNavigationEvents() {
       document.body.classList.toggle('mode-mobile-frame');
       const isMobile = document.body.classList.contains('mode-mobile-frame');
       deviceToggleBtn.innerHTML = isMobile ? '💻 切換電腦全螢幕模式' : '📱 切換手機外框預覽';
-      if (AppState.mapInstance && AppState.mapInstance.invalidateSize) {
-        setTimeout(() => AppState.mapInstance.invalidateSize(), 300);
-      }
     });
   }
 
@@ -280,7 +341,7 @@ function bindNavigationEvents() {
 // PAGE 1: 首頁隨機抽籤邏輯
 // ==========================================================
 function bindHomeEvents() {
-  // 來源切換 (雲端店家 vs 口袋名單)
+  // 來源切換 (全部店家名冊 vs 口袋名單)
   const sourcePills = document.querySelectorAll('.home-source-pill');
   sourcePills.forEach(pill => {
     pill.addEventListener('click', () => {
@@ -288,6 +349,7 @@ function bindHomeEvents() {
       sourcePills.forEach(p => p.classList.remove('active'));
       pill.classList.add('active');
       AppState.homeFilter.source = pill.dataset.source;
+      updateCandidateCountUI();
     });
   });
 
@@ -298,6 +360,7 @@ function bindHomeEvents() {
       SoundEngine.playPop();
       AppState.homeFilter.excludeEaten = !AppState.homeFilter.excludeEaten;
       excludePill.classList.toggle('active', AppState.homeFilter.excludeEaten);
+      updateCandidateCountUI();
     });
   }
 
@@ -307,10 +370,10 @@ function bindHomeEvents() {
     if (el) {
       el.addEventListener('change', (e) => {
         AppState.homeFilter[field] = e.target.value;
+        updateCandidateCountUI();
       });
     }
   };
-  bindFilter('filterArea', 'area');
   bindFilter('filterBudget', 'budget');
   bindFilter('filterCategory', 'category');
   bindFilter('filterPayment', 'payment');
@@ -337,9 +400,9 @@ function bindHomeEvents() {
 
   const btnFavToggle = document.getElementById('btnDestinyFavToggle');
   if (btnFavToggle) {
-    btnFavToggle.addEventListener('click', () => {
+    btnFavToggle.addEventListener('click', async () => {
       if (AppState.currentWinner) {
-        toggleFavorite(AppState.currentWinner.id);
+        await toggleFavorite(AppState.currentWinner.id);
         renderHomeDestinyCard(AppState.currentWinner);
       }
     });
@@ -355,36 +418,201 @@ function bindHomeEvents() {
   }
 }
 
+// ==========================================================
+// 地區多選元件邏輯 (支援台中 29 區 + 全選 + 常用區)
+// ==========================================================
+function initDistrictSelector() {
+  const container = document.getElementById('districtChipsContainer');
+  if (!container) return;
+
+  const districts = window.TAICHUNG_DISTRICTS || [];
+  container.innerHTML = '';
+
+  districts.forEach(d => {
+    const chip = document.createElement('div');
+    chip.className = 'district-chip';
+    chip.dataset.district = d;
+    chip.textContent = d;
+    chip.addEventListener('click', () => toggleDistrict(d));
+    container.appendChild(chip);
+  });
+
+  // 加入其他/待確認選項
+  const otherChip = document.createElement('div');
+  otherChip.className = 'district-chip';
+  otherChip.dataset.district = '待確認';
+  otherChip.textContent = '待確認/其他';
+  otherChip.addEventListener('click', () => toggleDistrict('待確認'));
+  container.appendChild(otherChip);
+
+  // 綁定下拉面板開關
+  const toggleBtn = document.getElementById('btnDistrictToggle');
+  const panel = document.getElementById('districtDropdownPanel');
+  if (toggleBtn && panel) {
+    toggleBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+    });
+    document.addEventListener('click', (e) => {
+      if (!toggleBtn.contains(e.target) && !panel.contains(e.target)) {
+        panel.style.display = 'none';
+      }
+    });
+  }
+
+  const btnAll = document.getElementById('btnDistrictSelectAll');
+  if (btnAll) btnAll.addEventListener('click', () => selectAllDistricts());
+
+  const btnClear = document.getElementById('btnDistrictClear');
+  if (btnClear) btnClear.addEventListener('click', () => clearDistricts());
+
+  const btnPopular = document.getElementById('btnDistrictPopular');
+  if (btnPopular) btnPopular.addEventListener('click', () => selectPopularDistricts());
+
+  renderDistrictSelectorUI();
+}
+
+function renderDistrictSelectorUI() {
+  const textEl = document.getElementById('districtSelectorText');
+  const s = AppState.homeFilter.selectedDistricts;
+  const allDistricts = window.TAICHUNG_DISTRICTS || [];
+
+  document.querySelectorAll('.district-chip').forEach(chip => {
+    const d = chip.dataset.district;
+    chip.classList.toggle('selected', s.has('全部') || s.has(d));
+  });
+
+  if (s.has('全部') || s.size >= allDistricts.length) {
+    if (textEl) textEl.textContent = '全部地區 (29區)';
+  } else if (s.size === 0) {
+    if (textEl) textEl.textContent = '未選擇地區 (點擊選取)';
+  } else if (s.size <= 2) {
+    if (textEl) textEl.textContent = Array.from(s).join(', ');
+  } else {
+    const firstTwo = Array.from(s).slice(0, 2).join(', ');
+    if (textEl) textEl.textContent = `${firstTwo} 等 ${s.size} 區`;
+  }
+}
+
+function selectAllDistricts() {
+  AppState.homeFilter.selectedDistricts = new Set(['全部']);
+  renderDistrictSelectorUI();
+  updateCandidateCountUI();
+}
+
+function clearDistricts() {
+  AppState.homeFilter.selectedDistricts = new Set();
+  renderDistrictSelectorUI();
+  updateCandidateCountUI();
+}
+
+function selectPopularDistricts() {
+  AppState.homeFilter.selectedDistricts = new Set(['西屯區', '西區', '北區', '南屯區', '北屯區']);
+  renderDistrictSelectorUI();
+  updateCandidateCountUI();
+}
+
+function toggleDistrict(d) {
+  const s = AppState.homeFilter.selectedDistricts;
+  if (s.has('全部')) {
+    s.clear();
+    s.add(d);
+  } else {
+    if (s.has(d)) s.delete(d);
+    else s.add(d);
+  }
+  renderDistrictSelectorUI();
+  updateCandidateCountUI();
+}
+
+// ==========================================================
+// 即時候選池數量計算與條件嚴苛診斷提示
+// ==========================================================
+function updateCandidateCountUI() {
+  const countEl = document.getElementById('candidateCountNumber');
+  const hintEl = document.getElementById('candidateStatusHint');
+  const diagEl = document.getElementById('candidateDiagnosticText');
+  const barEl = document.getElementById('candidatePoolBar');
+  if (!countEl) return;
+
+  const candidates = getEligibleCandidates();
+  const count = candidates.length;
+  countEl.textContent = count;
+
+  if (count === 0) {
+    if (barEl) barEl.classList.add('warning');
+    if (hintEl) hintEl.textContent = '⚠️ 無符合店家';
+    if (diagEl) {
+      diagEl.style.display = 'block';
+      diagEl.textContent = getDiagnosticSuggestions();
+    }
+  } else if (count === 1) {
+    if (barEl) barEl.classList.remove('warning');
+    if (hintEl) hintEl.textContent = '💡 唯一符合 (點擊直選)';
+    if (diagEl) diagEl.style.display = 'none';
+  } else {
+    if (barEl) barEl.classList.remove('warning');
+    if (hintEl) hintEl.textContent = '🎲 輪盤加權隨機';
+    if (diagEl) diagEl.style.display = 'none';
+  }
+}
+
+// 分析過嚴條件並給予具體放寬建議
+function getDiagnosticSuggestions() {
+  const f = AppState.homeFilter;
+  const suggestions = [];
+
+  if (f.source === 'favs') suggestions.push('目前為「我的口袋名單」，名單內店家較少');
+  if (!f.selectedDistricts.has('全部')) suggestions.push(`地區限制在 [${Array.from(f.selectedDistricts).join('/')}]`);
+  if (f.category !== '全部') suggestions.push(`料理類別限制為「${f.category}」`);
+  if (f.budget !== '不限') suggestions.push(`預算區間設為「${f.budget}」`);
+  if (Number(f.minRating) > 0) suggestions.push(`品質限制在 ${f.minRating} 星以上`);
+  if (f.payment !== '全部') suggestions.push(`付款方式限制為「${f.payment}」`);
+  if (f.mealTime && f.mealTime !== '午餐') suggestions.push(`時段選在「${f.mealTime}」`);
+
+  if (suggestions.length === 0) return '建議新增更多口袋店家或放寬偏好設定！';
+  return '可能過嚴的條件：' + suggestions.join('、') + '。建議放寬條件再試一次！';
+}
+
 // 執行抽籤演算法
 function startDrawFood() {
   if (AppState.isSpinning) return;
-  AppState.isSpinning = true;
 
   const drawBtn = document.getElementById('btnDrawFood');
   const destinyCard = document.getElementById('destinyCardDisplay');
   const rollingBox = document.getElementById('destinyRollingBox');
   const rollingTicker = document.getElementById('rollingTickerText');
-
-  drawBtn.classList.add('spinning');
-  drawBtn.innerHTML = '<span class="dice-icon">🎲</span> 命運輪盤轉動中...';
-
-  destinyCard.style.display = 'none';
-  rollingBox.style.display = 'flex';
+  const emptyBox = document.getElementById('destinyEmptyDisplay');
 
   // 1. 取得合格候選名單
   const candidates = getEligibleCandidates();
 
   if (candidates.length === 0) {
-    setTimeout(() => {
-      alert("嗚～找不到符合所有篩選條件的餐廳！建議放寬預算、地區或料理類別條件再試一次唷！");
-      drawBtn.classList.remove('spinning');
-      drawBtn.innerHTML = '<span class="dice-icon">🎲</span> 幫我抽一家！';
-      rollingBox.style.display = 'none';
-      destinyCard.style.display = 'flex';
-      AppState.isSpinning = false;
-    }, 400);
+    alert("嗚～找不到符合所有篩選條件的餐廳！\n\n" + getDiagnosticSuggestions());
     return;
   }
+
+  // 候選名單只有 1 間時：直接公佈並明確提示
+  if (candidates.length === 1) {
+    const singleWinner = candidates[0];
+    AppState.currentWinner = singleWinner;
+    SoundEngine.playFanfare();
+    triggerConfetti();
+    renderHomeDestinyCard(singleWinner);
+    if (emptyBox) emptyBox.style.display = 'none';
+    if (rollingBox) rollingBox.style.display = 'none';
+    if (destinyCard) destinyCard.style.display = 'flex';
+    alert(`🎯 目前符合您所有設定條件的店家剛好只有 1 間：\n\n【${singleWinner.name}】！\n\n若希望有更多選擇，建議放寬預算或地區條件唷！`);
+    return;
+  }
+
+  AppState.isSpinning = true;
+  drawBtn.classList.add('spinning');
+  drawBtn.innerHTML = '<span class="dice-icon">🎲</span> 命運輪盤轉動中...';
+
+  if (emptyBox) emptyBox.style.display = 'none';
+  if (destinyCard) destinyCard.style.display = 'none';
+  if (rollingBox) rollingBox.style.display = 'flex';
 
   // 2. 模擬拉霸滾動動畫 (1.8秒)
   let spinCount = 0;
@@ -397,7 +625,7 @@ function startDrawFood() {
 
     if (spinCount >= maxSpins) {
       clearInterval(interval);
-      // 加權抽籤計算勝出者
+      // 加權抽籤計算勝出者 (支援避免連續抽中同一家)
       const winner = pickWeightedWinner(candidates);
       AppState.currentWinner = winner;
 
@@ -426,41 +654,96 @@ function getEligibleCandidates() {
     // 來源過濾
     if (f.source === 'favs' && !r.isFavorite) return false;
 
-    // 地區過濾
-    if (f.area !== '全部' && r.area !== f.area) return false;
+    // 地區多選過濾 (支援台中 29 區 + 全選)
+    if (f.selectedDistricts && !f.selectedDistricts.has('全部')) {
+      const d = r.district || r.area || '待確認';
+      if (!f.selectedDistricts.has(d)) return false;
+    }
 
     // 料理類別過濾
     if (f.category !== '全部' && !r.category.includes(f.category)) return false;
 
-    // 評分過濾
-    if (Number(f.minRating) > 0 && r.rating < Number(f.minRating)) return false;
+    // 評分過濾 (支援未評分店家設定)
+    if (Number(f.minRating) > 0) {
+      if (r.rating === null || r.rating === undefined) {
+        if (!settings.includeUnratedPlaces) return false;
+      } else if (r.rating < Number(f.minRating)) {
+        return false;
+      }
+    }
 
-    // 預算過濾
-    if (f.budget === '100-200' && (r.avgPrice < 80 || r.avgPrice > 200)) return false;
-    if (f.budget === '150-250' && (r.avgPrice < 120 || r.avgPrice > 280)) return false;
-    if (f.budget === '300-500' && (r.avgPrice < 250 || r.avgPrice > 550)) return false;
-    if (f.budget === '500以上' && r.avgPrice < 500) return false;
+    // 預算過濾 (安全比對 avgPrice 或 priceMin~priceMax)
+    if (f.budget !== '不限') {
+      const price = r.avgPrice != null ? r.avgPrice : (r.priceMin && r.priceMax ? Math.round((r.priceMin + r.priceMax) / 2) : null);
+      if (price !== null) {
+        if (f.budget === '100-200' && (price < 80 || price > 200)) return false;
+        if (f.budget === '150-250' && (price < 120 || price > 280)) return false;
+        if (f.budget === '300-500' && (price < 250 || price > 550)) return false;
+        if (f.budget === '500以上' && price < 500) return false;
+      }
+    }
 
     // 付款方式過濾
     if (f.payment !== '全部' && r.paymentMethods && !r.paymentMethods.includes(f.payment)) return false;
 
+    // 用餐時段實質過濾 (早餐 / 午餐 / 晚餐 / 宵夜)
+    if (f.mealTime && f.mealTime !== '不限') {
+      const targetTime = f.mealTime;
+      if (Array.isArray(r.mealTimes) && r.mealTimes.length > 0) {
+        if (!r.mealTimes.includes(targetTime)) return false;
+      } else if (r.openHours) {
+        const hours = r.openHours.toLowerCase();
+        let match = false;
+        if (targetTime === '早餐') {
+          match = hours.includes('早') || hours.includes('06:') || hours.includes('07:') || hours.includes('08:') || hours.includes('09:');
+        } else if (targetTime === '午餐') {
+          match = hours.includes('午') || hours.includes('11:') || hours.includes('12:') || hours.includes('13:') || hours.includes('14:') || hours.includes('10:');
+        } else if (targetTime === '晚餐') {
+          match = hours.includes('晚') || hours.includes('17:') || hours.includes('18:') || hours.includes('19:') || hours.includes('20:') || hours.includes('21:');
+        } else if (targetTime === '宵夜') {
+          match = hours.includes('宵夜') || hours.includes('22:') || hours.includes('23:') || hours.includes('24:') || hours.includes('00:') || hours.includes('01:') || hours.includes('02:') || hours.includes('03:');
+        }
+        if (!match) {
+          if (settings.unknownMealTimeRule === 'exclude') return false;
+          if (targetTime === '早餐' || targetTime === '宵夜') return false;
+        }
+      } else {
+        // 未有時段資料者：依設定規則處理
+        if (settings.unknownMealTimeRule === 'exclude') return false;
+        if (targetTime === '早餐' || targetTime === '宵夜') return false;
+      }
+    }
+
     // 排除不吃的料理/食材
     if (settings.dislikes && settings.dislikes.length > 0) {
       const hasDislike = settings.dislikes.some(dis => 
-        r.tags.some(t => t.includes(dis)) || r.name.includes(dis) || r.category.includes(dis)
+        (r.tags && r.tags.some(t => t.includes(dis))) || (r.name && r.name.includes(dis)) || (r.category && r.category.includes(dis))
       );
       if (hasDislike) return false;
     }
 
-    // 排除最近吃過的規則
+    // 排除最近吃過的規則 (依該店家最新一次用餐日期判斷)
     if (f.excludeEaten && settings.excludeRule !== 'none') {
-      const recentEaten = AppState.history.find(h => h.restaurantName === r.name || h.restaurantId === r.id);
-      if (recentEaten) {
+      const rId = r.id;
+      const rName = r.name ? r.name.trim() : '';
+      const matchHistories = AppState.history.filter(h => 
+        (h.restaurantId && h.restaurantId === rId) ||
+        (h.placeId && h.placeId === rId) ||
+        (h.restaurantName && h.restaurantName.trim() === rName) ||
+        (h.placeName && h.placeName.trim() === rName)
+      );
+
+      if (matchHistories.length > 0) {
         if (settings.excludeRule === 'forever') return false;
-        const eatenDate = new Date(recentEaten.date);
-        const diffDays = Math.floor((now - eatenDate) / (1000 * 60 * 60 * 24));
-        const limitDays = parseInt(settings.excludeRule, 10);
-        if (diffDays <= limitDays) return false;
+        const timestamps = matchHistories
+          .map(h => new Date(h.date).getTime())
+          .filter(t => !isNaN(t));
+        if (timestamps.length > 0) {
+          const latestTime = Math.max(...timestamps);
+          const diffDays = Math.floor((now.getTime() - latestTime) / (1000 * 60 * 60 * 24));
+          const limitDays = parseInt(settings.excludeRule, 10);
+          if (diffDays <= limitDays) return false;
+        }
       }
     }
 
@@ -468,17 +751,26 @@ function getEligibleCandidates() {
   });
 }
 
-// 根據設定中各類別權重進行加權抽取
+// 根據設定中各類別權重進行加權抽取 (支援避免連續抽中同一家)
 function pickWeightedWinner(candidates) {
   const weights = AppState.settings.cuisineWeights || {};
+  
+  // 若啟用「避免連續抽中同一家」且候選店家 > 1，過濾掉上一輪中獎者
+  let activeCandidates = candidates;
+  if (AppState.settings.avoidConsecutivePicks && AppState.currentWinner && candidates.length > 1) {
+    const withoutPrevious = candidates.filter(c => c.id !== AppState.currentWinner.id);
+    if (withoutPrevious.length > 0) {
+      activeCandidates = withoutPrevious;
+    }
+  }
+
   let totalWeight = 0;
   const pool = [];
 
-  candidates.forEach(c => {
-    // 找出對應料理權重 (預設 4)
+  activeCandidates.forEach(c => {
     let w = 4;
     for (let key in weights) {
-      if (c.category.includes(key) || c.tags.some(t => t.includes(key))) {
+      if ((c.category && c.category.includes(key)) || (c.tags && c.tags.some(t => t.includes(key)))) {
         w = weights[key];
         break;
       }
@@ -494,33 +786,79 @@ function pickWeightedWinner(candidates) {
     }
     rand -= entry.weight;
   }
-  return candidates[0];
+  return activeCandidates[0];
 }
 
 // 渲染命定美食卡片
 function renderHomeDestinyCard(restaurant) {
-  if (!restaurant) return;
+  const emptyBox = document.getElementById('destinyEmptyDisplay');
+  const cardBox = document.getElementById('destinyCardDisplay');
+
+  if (!restaurant) {
+    AppState.currentWinner = null;
+    if (emptyBox) emptyBox.style.display = 'flex';
+    if (cardBox) cardBox.style.display = 'none';
+    return;
+  }
+
+  if (emptyBox) emptyBox.style.display = 'none';
+  if (cardBox) cardBox.style.display = 'flex';
   AppState.currentWinner = restaurant;
 
-  document.getElementById('destinyImg').src = restaurant.photo;
+  const imgEl = document.getElementById('destinyImg');
+  if (imgEl) imgEl.src = restaurant.photo || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=700';
   document.getElementById('destinyName').textContent = restaurant.name;
-  document.getElementById('destinyRating').innerHTML = `★ ${restaurant.rating}`;
-  document.getElementById('destinyReviewCount').textContent = `(${restaurant.reviewCount.toLocaleString()} 則評論)`;
-  document.getElementById('destinyPrice').textContent = `約 $${restaurant.avgPrice}/人`;
-  document.getElementById('destinyArea').textContent = restaurant.area;
-  document.getElementById('destinyDesc').textContent = restaurant.description;
 
-  // 標籤渲染
+  // 評分顯示 (無資料時顯示待評分，不塞假星等)
+  const ratingEl = document.getElementById('destinyRating');
+  if (restaurant.rating != null) {
+    ratingEl.innerHTML = `★ ${restaurant.rating}`;
+  } else {
+    ratingEl.innerHTML = `<span style="color: var(--text-muted); font-size: 0.85rem;">★ 待評分</span>`;
+  }
+
+  // 評論數顯示
+  const reviewEl = document.getElementById('destinyReviewCount');
+  if (restaurant.reviewCount != null) {
+    reviewEl.textContent = `(${restaurant.reviewCount.toLocaleString()} 則評論)`;
+  } else {
+    reviewEl.textContent = `(暫無評論)`;
+  }
+
+  // 預算顯示 (無資料時顯示未註記，不塞假價格)
+  const priceEl = document.getElementById('destinyPrice');
+  if (restaurant.avgPrice != null) {
+    priceEl.textContent = `約 $${restaurant.avgPrice}/人`;
+  } else if (restaurant.priceMin && restaurant.priceMax) {
+    priceEl.textContent = `$${restaurant.priceMin} ~ $${restaurant.priceMax}`;
+  } else {
+    priceEl.textContent = `預算未註記`;
+  }
+
+  document.getElementById('destinyArea').textContent = restaurant.district || restaurant.area || '待確認地區';
+  document.getElementById('destinyDesc').textContent = restaurant.description || '暫無描述';
+
+  // 標籤渲染 (包含資料來源標籤)
   const tagBox = document.getElementById('destinyTags');
   tagBox.innerHTML = '';
-  restaurant.tags.forEach(t => {
-    const span = document.createElement('span');
-    span.className = 'meta-tag';
-    span.textContent = `#${t}`;
-    tagBox.appendChild(span);
-  });
+  
+  // 來源徽章
+  const sourceBadge = document.createElement('span');
+  const isDemo = restaurant.source === 'demo' || restaurant.isDemo;
+  sourceBadge.className = `badge-source ${isDemo ? 'badge-source-demo' : (restaurant.source === 'csv' ? 'badge-source-csv' : (restaurant.source === 'google_takeout' ? 'badge-source-google' : 'badge-source-manual'))}`;
+  sourceBadge.textContent = isDemo ? '示範資料 (未驗證)' : (restaurant.source === 'csv' ? 'CSV 匯入' : (restaurant.source === 'google_takeout' ? 'Google 匯出' : '自訂建立'));
+  tagBox.appendChild(sourceBadge);
 
-  // 收藏愛心狀態
+  if (Array.isArray(restaurant.tags)) {
+    restaurant.tags.forEach(t => {
+      const span = document.createElement('span');
+      span.className = 'meta-tag';
+      span.textContent = `#${t}`;
+      tagBox.appendChild(span);
+    });
+  }
+
+  // 收藏狀態
   const favBtn = document.getElementById('btnDestinyFavToggle');
   favBtn.innerHTML = restaurant.isFavorite ? '❤️ 已在口袋名單' : '🤍 加入收藏名單';
 
@@ -566,21 +904,9 @@ function bindExploreEvents() {
     });
   });
 
-  // 重查此地圖範圍按鈕
-  const refreshMapBtn = document.getElementById('btnRefreshMapArea');
-  if (refreshMapBtn) {
-    refreshMapBtn.addEventListener('click', () => {
-      SoundEngine.playPop();
-      refreshMapBtn.innerHTML = '🔄 搜尋中...';
-      setTimeout(() => {
-        refreshMapBtn.innerHTML = '📍 重查此地圖範圍';
-        renderExploreList();
-      }, 500);
-    });
-  }
 }
 
-// 渲染探索列表
+// 渲染探索列表 (響應式卡片網格：電腦版兩欄，手機版單欄)
 function renderExploreList() {
   const container = document.getElementById('exploreRestaurantList');
   if (!container) return;
@@ -589,24 +915,24 @@ function renderExploreList() {
   const { query, source, tag } = AppState.exploreFilter;
 
   const filtered = AppState.restaurants.filter(r => {
-    // 來源篩選
+    // 來源篩選 (全部名冊 vs 我的口袋清單)
     if (source === 'myList' && !r.isFavorite) return false;
 
     // 關鍵字搜尋 (店名、地區、標籤、菜系)
     if (query) {
-      const match = r.name.toLowerCase().includes(query) ||
-                    r.area.toLowerCase().includes(query) ||
-                    r.category.toLowerCase().includes(query) ||
-                    r.tags.some(t => t.toLowerCase().includes(query));
+      const q = query.toLowerCase();
+      const match = (r.name && r.name.toLowerCase().includes(q)) ||
+                    ((r.district || r.area) && (r.district || r.area).toLowerCase().includes(q)) ||
+                    (r.category && r.category.toLowerCase().includes(q)) ||
+                    (Array.isArray(r.tags) && r.tags.some(t => t.toLowerCase().includes(q)));
       if (!match) return false;
     }
 
-    // 標籤篩選
-    if (tag === 'rating' && r.rating < 4.5) return false;
-    if (tag === 'price' && r.avgPrice > 250) return false;
-    if (tag === 'distance' && r.distanceKm > 2.0) return false;
-    if (tag !== '全部' && tag !== 'rating' && tag !== 'price' && tag !== 'distance') {
-      if (!r.category.includes(tag) && !r.tags.includes(tag)) return false;
+    // 標籤篩選 (不使用虛構距離)
+    if (tag === 'rating' && (r.rating == null || r.rating < 4.5)) return false;
+    if (tag === 'price' && (r.avgPrice == null || r.avgPrice > 250)) return false;
+    if (tag !== '全部' && tag !== 'rating' && tag !== 'price') {
+      if ((!r.category || !r.category.includes(tag)) && (!r.tags || !r.tags.includes(tag))) return false;
     }
 
     return true;
@@ -614,178 +940,94 @@ function renderExploreList() {
 
   if (filtered.length === 0) {
     container.innerHTML = `
-      <div style="text-align: center; padding: 40px 10px; color: var(--text-muted);">
-        <p style="font-size: 2rem; margin-bottom: 8px;">🐱🍲</p>
-        <p style="font-weight: 700;">找不到相關的美食店家</p>
-        <p style="font-size: 0.82rem;">試試更換搜尋關鍵字或放寬篩選標籤！</p>
+      <div style="grid-column: 1 / -1; text-align: center; padding: 48px 16px; color: var(--text-muted);">
+        <p style="font-size: 2.2rem; margin-bottom: 8px;">🐱🍲</p>
+        <p style="font-weight: 700; font-size: 1.05rem; color: var(--text-main);">找不到符合條件的餐廳</p>
+        <p style="font-size: 0.85rem; margin-top: 4px;">試試更換搜尋關鍵字，或點擊上方「全部餐廳」標籤！</p>
       </div>
     `;
-    updateMapMarkers([]);
     return;
   }
 
   filtered.forEach(r => {
     const card = document.createElement('div');
-    card.className = 'restaurant-row-card';
-    card.id = `rest-row-${r.id}`;
-    
+    card.className = 'explore-card';
+    card.id = `explore-card-${r.id}`;
+
+    const isDemo = r.source === 'demo' || r.isDemo;
+    const sourceClass = isDemo ? 'badge-source-demo' : (r.source === 'csv' ? 'badge-source-csv' : (r.source === 'google_takeout' ? 'badge-source-google' : 'badge-source-manual'));
+    const sourceLabel = isDemo ? '示範資料' : (r.source === 'csv' ? 'CSV 匯入' : (r.source === 'google_takeout' ? 'Google 匯出' : '自訂建立'));
+
+    const googleSearchUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name + ' ' + (r.address || r.district || ''))}`;
+    const targetMapUrl = r.googlePlaceUrl || googleSearchUrl;
+
+    const ratingText = r.rating != null ? `★ ${r.rating}` : '★ 待評分';
+    const reviewText = r.reviewCount != null ? `(${r.reviewCount.toLocaleString()})` : '(無評論)';
+    const priceText = r.avgPrice != null ? `$${r.avgPrice}/人` : (r.priceMin && r.priceMax ? `$${r.priceMin}~${r.priceMax}` : '預算未註記');
+    const districtText = r.district || r.area || '待確認地區';
+
     card.innerHTML = `
-      <div class="rest-thumb-box">
-        <img class="rest-thumb-img" src="${r.photo}" alt="${r.name}" loading="lazy">
+      <div class="explore-card-thumb-wrap">
+        <img class="explore-card-thumb" src="${r.photo || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=700'}" alt="${r.name}" loading="lazy">
+        <span class="explore-card-cat-pill">${r.category || '美味料理'}</span>
+        <button class="btn-heart-favorite ${r.isFavorite ? 'active' : ''}" data-id="${r.id}" title="收藏到口袋名單">
+          ${r.isFavorite ? '❤️' : '🤍'}
+        </button>
       </div>
-      <div class="rest-info-box">
-        <div class="rest-name-row">
-          <h4 class="rest-card-name">${r.name}</h4>
-          <button class="btn-heart-favorite ${r.isFavorite ? 'active' : ''}" data-id="${r.id}" title="收藏到口袋名單">
-            ${r.isFavorite ? '❤️' : '🤍'}
+      <div class="explore-card-content">
+        <div class="explore-card-title-row">
+          <h4 class="explore-card-name" title="${r.name}">${r.name}</h4>
+          <span class="badge-source ${sourceClass}">${sourceLabel}</span>
+        </div>
+        
+        <div class="explore-card-meta-row">
+          <span style="color: var(--star-color); font-weight: 700;">${ratingText}</span>
+          <span style="color: var(--text-muted); font-size: 0.8rem;">${reviewText}</span>
+          <span>•</span>
+          <span style="color: var(--accent-color); font-weight: 700;">${priceText}</span>
+          <span>•</span>
+          <span>📍 ${districtText}</span>
+          ${r.isOpen != null ? `<span>•</span><span style="color: ${r.isOpen ? 'var(--success-color)' : '#999'}; font-weight: 700;">${r.isOpen ? '營業中' : '休息中'}</span>` : ''}
+        </div>
+
+        <p class="explore-card-desc">
+          ${r.description ? (r.description.length > 55 ? r.description.slice(0, 55) + '...' : r.description) : (r.address || '暫無詳細備註')}
+        </p>
+
+        <div class="explore-card-tags">
+          ${(r.tags || []).slice(0, 3).map(t => `<span class="meta-tag" style="font-size: 0.74rem; padding: 2px 7px;">#${t}</span>`).join('')}
+        </div>
+
+        <div class="explore-card-actions">
+          <a href="${targetMapUrl}" target="_blank" rel="noopener noreferrer" class="btn-card-action" style="flex: 1; text-align: center; font-size: 0.82rem; background: #E8F0FE; color: #1967D2; border-color: #D2E3FC; text-decoration: none; display: flex; align-items: center; justify-content: center; gap: 4px;">
+            🧭 在 Google Maps 查看
+          </a>
+          <button class="btn-card-action btn-accent btn-explore-pick-now" data-id="${r.id}" style="flex: 1; font-size: 0.82rem;">
+            🍽️ 抽這家吃！
           </button>
-        </div>
-        <div class="rest-card-meta">
-          <span style="color: var(--star-color); font-weight: 700;">★ ${r.rating}</span>
-          <span>(${r.reviewCount})</span>
-          <span>•</span>
-          <span>$${r.priceMin}~${r.priceMax}</span>
-          <span>•</span>
-          <span>${r.category}</span>
-        </div>
-        <div class="rest-card-meta">
-          <span>📍 ${r.distanceKm} km</span>
-          <span>•</span>
-          <span style="color: ${r.isOpen ? 'var(--success-color)' : '#999'}; font-weight: 700;">
-            ${r.isOpen ? '營業中' : '休息中'}
-          </span>
-        </div>
-        <div class="rest-card-tags">
-          ${r.tags.slice(0, 3).map(t => `<span class="meta-tag" style="font-size: 0.75rem; padding: 2px 8px;">#${t}</span>`).join('')}
         </div>
       </div>
     `;
 
-    // 點擊卡片與地圖同步定位
-    card.addEventListener('click', (e) => {
-      if (e.target.closest('.btn-heart-favorite')) return;
-      focusRestaurantOnMap(r);
-      highlightCard(r.id);
+    // 抽這家吃按鈕
+    card.querySelector('.btn-explore-pick-now').addEventListener('click', () => {
+      SoundEngine.playPop();
+      renderHomeDestinyCard(r);
+      const homeTabBtn = document.querySelector('.nav-tab-btn[data-tab="home"]') || document.querySelector('.mobile-nav-item[data-tab="home"]');
+      if (homeTabBtn) homeTabBtn.click();
     });
 
     // 收藏按鈕點擊
     const favBtn = card.querySelector('.btn-heart-favorite');
-    favBtn.addEventListener('click', (e) => {
+    favBtn.addEventListener('click', async (e) => {
       e.stopPropagation();
-      toggleFavorite(r.id);
+      await toggleFavorite(r.id);
       favBtn.classList.toggle('active', r.isFavorite);
       favBtn.innerHTML = r.isFavorite ? '❤️' : '🤍';
     });
 
     container.appendChild(card);
   });
-
-  // 更新地圖標記
-  updateMapMarkers(filtered);
-}
-
-// 高亮列表卡片
-function highlightCard(id) {
-  document.querySelectorAll('.restaurant-row-card').forEach(c => c.classList.remove('selected'));
-  const card = document.getElementById(`rest-row-${id}`);
-  if (card) {
-    card.classList.add('selected');
-    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-  }
-}
-
-// ==========================================================
-// 地圖模組 (支援 Leaflet 開源真實地圖 + Google Maps API)
-// ==========================================================
-function initMap() {
-  const mapElement = document.getElementById('leafletMapContainer');
-  if (!mapElement) return;
-
-  // 預設以台中西屯為核心座標 (24.1632, 120.6445)
-  if (typeof L !== 'undefined') {
-    AppState.mapInstance = L.map('leafletMapContainer', {
-      zoomControl: true,
-      attributionControl: false
-    }).setView([24.1632, 120.6445], 13);
-
-    // 採用溫柔奶油暖色 CartoDB Positron 圖資
-    L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
-      maxZoom: 19
-    }).addTo(AppState.mapInstance);
-
-    updateMapMarkers(AppState.restaurants);
-  } else {
-    console.warn("Leaflet 尚未載入，稍後重試");
-  }
-}
-
-// 更新地圖標記 Pins
-function updateMapMarkers(restaurants) {
-  if (!AppState.mapInstance || typeof L === 'undefined') return;
-
-  // 清除舊標記
-  AppState.mapMarkers.forEach(m => AppState.mapInstance.removeLayer(m));
-  AppState.mapMarkers = [];
-
-  const bounds = [];
-
-  restaurants.forEach(r => {
-    if (!r.lat || !r.lng) return;
-
-    // 自訂奶油可愛風地圖圓標 Pin
-    const customIcon = L.divIcon({
-      className: 'custom-map-pin',
-      html: `
-        <div style="background: white; border: 2.5px solid var(--accent-color); border-radius: 50%; width: 34px; height: 34px; display: flex; align-items: center; justify-content: center; font-size: 16px; box-shadow: 0 4px 10px rgba(0,0,0,0.2);">
-          🍲
-        </div>
-      `,
-      iconSize: [34, 34],
-      iconAnchor: [17, 17]
-    });
-
-    const marker = L.marker([r.lat, r.lng], { icon: customIcon }).addTo(AppState.mapInstance);
-
-    const googleNavUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name + ' ' + (r.address || ''))}`;
-    
-    // 點擊標記跳出氣泡
-    marker.bindPopup(`
-      <div style="font-family: inherit; width: 200px;">
-        <img src="${r.photo}" style="width: 100%; height: 90px; object-fit: cover; border-radius: 8px; margin-bottom: 6px;">
-        <h4 style="font-size: 1rem; margin: 0 0 4px 0; font-weight: 800; color: #3A322D;">${r.name}</h4>
-        <p style="font-size: 0.8rem; margin: 0 0 6px 0; color: #82756C;">★ ${r.rating} • ${r.category} • $${r.avgPrice}/人</p>
-        <a href="${googleNavUrl}" target="_blank" style="display: block; text-align: center; background: #4285F4; color: white; padding: 6px 10px; border-radius: 20px; font-size: 0.8rem; text-decoration: none; font-weight: 700;">
-          🧭 在 Google Maps 中開啟導航
-        </a>
-      </div>
-    `);
-
-    marker.on('click', () => {
-      highlightCard(r.id);
-    });
-
-    AppState.mapMarkers.push(marker);
-    bounds.push([r.lat, r.lng]);
-  });
-
-  if (bounds.length > 0 && AppState.mapInstance) {
-    AppState.mapInstance.fitBounds(bounds, { padding: [40, 40], maxZoom: 14 });
-  }
-}
-
-// 地圖聚焦到特定餐廳
-function focusRestaurantOnMap(restaurant) {
-  if (!AppState.mapInstance || !restaurant.lat || !restaurant.lng) return;
-  AppState.mapInstance.flyTo([restaurant.lat, restaurant.lng], 15, { duration: 1.2 });
-  
-  // 觸發該標記的 popup
-  const marker = AppState.mapMarkers.find(m => {
-    const pos = m.getLatLng();
-    return Math.abs(pos.lat - restaurant.lat) < 0.0001 && Math.abs(pos.lng - restaurant.lng) < 0.0001;
-  });
-  if (marker) {
-    setTimeout(() => marker.openPopup(), 600);
-  }
 }
 
 // ==========================================================
@@ -900,12 +1142,13 @@ function renderFavoritesView() {
           <h4 style="font-size: 1.1rem; font-weight: 800; color: var(--text-main);">${r.name}</h4>
           <button class="btn-heart-favorite active" data-id="${r.id}" title="取消收藏">❤️</button>
         </div>
-        <div style="display: flex; gap: 8px; font-size: 0.82rem; color: var(--text-muted); align-items: center;">
-          <span style="color: var(--star-color); font-weight: 700;">★ ${r.rating}</span>
+        <div style="display: flex; gap: 8px; font-size: 0.82rem; color: var(--text-muted); align-items: center; flex-wrap: wrap;">
+          <span style="color: var(--star-color); font-weight: 700;">★ ${r.rating != null ? r.rating : '待評分'}</span>
           <span>•</span>
-          <span>$${r.avgPrice}/人</span>
+          <span>${r.avgPrice != null ? '$' + r.avgPrice + '/人' : (r.priceMin && r.priceMax ? '$' + r.priceMin + '~' + r.priceMax : '預算未註記')}</span>
           <span>•</span>
-          <span>${r.area}</span>
+          <span>${r.district || r.area || '待確認地區'}</span>
+          <span class="badge-source ${r.source === 'demo' || r.isDemo ? 'badge-source-demo' : (r.source === 'csv' ? 'badge-source-csv' : (r.source === 'google_takeout' ? 'badge-source-google' : 'badge-source-manual'))}" style="font-size: 0.72rem; padding: 2px 6px;">${r.source === 'demo' || r.isDemo ? '示範資料' : (r.source === 'csv' ? 'CSV' : (r.source === 'google_takeout' ? 'Takeout' : '自訂'))}</span>
         </div>
         <p style="font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; margin: 4px 0 10px;">
           ${r.description ? r.description.slice(0, 48) + '...' : '暫無詳細描述'}
@@ -930,8 +1173,8 @@ function renderFavoritesView() {
     });
 
     // 取消收藏按鈕
-    card.querySelector('.btn-heart-favorite').addEventListener('click', () => {
-      toggleFavorite(r.id);
+    card.querySelector('.btn-heart-favorite').addEventListener('click', async () => {
+      await toggleFavorite(r.id);
       renderFavoritesView();
     });
 
@@ -939,13 +1182,31 @@ function renderFavoritesView() {
   });
 }
 
-// 切換餐廳收藏狀態
-function toggleFavorite(id) {
+// 切換餐廳收藏狀態 (事務優先：先寫入 IndexedDB，確認成功後才修改記憶體與畫面)
+async function toggleFavorite(id) {
   SoundEngine.playPop();
   const rest = AppState.restaurants.find(r => r.id === id);
-  if (rest) {
-    rest.isFavorite = !rest.isFavorite;
-    saveDataToStorage();
+  if (!rest) return;
+
+  const previousState = rest.isFavorite;
+  const newState = !previousState;
+  const updatedPlace = Object.assign({}, rest, {
+    isFavorite: newState,
+    updatedAt: new Date().toISOString()
+  });
+
+  try {
+    if (typeof DB !== 'undefined') {
+      await DB.put('places', updatedPlace);
+    }
+    // 只有資料庫成功落盤後才更新記憶體
+    rest.isFavorite = newState;
+    rest.updatedAt = updatedPlace.updatedAt;
+  } catch (err) {
+    console.error("更新收藏狀態失敗:", err);
+    alert(`❌ 收藏變更失敗：${err.message}\n資料未變更！`);
+    rest.isFavorite = previousState;
+    throw err;
   }
 }
 
@@ -1043,11 +1304,19 @@ function renderHistoryView() {
       </div>
     `;
 
-    card.querySelector('.btn-delete-history').addEventListener('click', () => {
+    card.querySelector('.btn-delete-history').addEventListener('click', async () => {
       if (confirm(`確定要刪除這筆「${h.restaurantName}」的紀錄嗎？`)) {
-        AppState.history = AppState.history.filter(item => item.id !== h.id);
-        saveDataToStorage();
-        renderHistoryView();
+        try {
+          if (typeof DB !== 'undefined') {
+            await DB.delete('history', h.id);
+          }
+          // 資料庫刪除成功後，才從記憶體中移除並重繪 UI
+          AppState.history = AppState.history.filter(item => item.id !== h.id);
+          renderHistoryView();
+        } catch (err) {
+          console.error("刪除歷史紀錄失敗:", err);
+          alert(`❌ 刪除紀錄失敗：${err.message}\n資料未變更！`);
+        }
       }
     });
 
@@ -1166,6 +1435,59 @@ function bindSettingsEvents() {
     });
   }
 
+  // 下載遷移前 localStorage 完整備份
+  const btnDownloadPreBackup = document.getElementById('btnDownloadPreBackup');
+  if (btnDownloadPreBackup) {
+    btnDownloadPreBackup.addEventListener('click', async () => {
+      SoundEngine.playPop();
+      if (typeof DB !== 'undefined') {
+        const backup = DB.createLocalStorageBackupData();
+        const filename = DB.getBackupFilename();
+        DB.downloadJsonFile(backup, filename);
+        alert(`📥 已下載遷移前 localStorage 完整備份：\n${filename}\n\n您可以將此檔案安全備份至 Google Drive！`);
+      } else {
+        alert("資料庫模組尚未載入");
+      }
+    });
+  }
+
+  // 檢查 IndexedDB 健康度 (純唯讀，絕不覆寫或復活已刪除資料)
+  const btnVerifyDbIntegrity = document.getElementById('btnVerifyDbIntegrity');
+  if (btnVerifyDbIntegrity) {
+    btnVerifyDbIntegrity.addEventListener('click', async () => {
+      SoundEngine.playPop();
+      if (typeof DB === 'undefined') return alert("資料庫模組尚未載入");
+
+      btnVerifyDbIntegrity.disabled = true;
+      btnVerifyDbIntegrity.textContent = '🔍 正在檢查資料庫中...';
+
+      try {
+        const v = await DB.verifyIntegrity();
+        await updateMigrationUI();
+        SoundEngine.playFanfare();
+        alert(`✅ IndexedDB 資料庫健康度檢查通過！\n\n• 儲存狀態：正常健康 (已初始化: ${v.initialized ? '是' : '否'})\n• 地點總數：${v.placesCount} 間 (自訂: ${v.userPlacesCount} / 示範: ${v.demoPlacesCount})\n• 歷史紀錄：${v.historyCount} 筆 (自訂: ${v.userHistoryCount} / 示範: ${v.demoHistoryCount})\n• 分類清單：${v.listsCount} 組\n\n此檢查為純唯讀驗證，未自 localStorage 覆蓋任何資料！`);
+      } catch (err) {
+        alert("❌ 資料庫檢查失敗：" + err.message);
+      } finally {
+        btnVerifyDbIntegrity.disabled = false;
+        btnVerifyDbIntegrity.textContent = '🔍 檢查 IndexedDB 資料庫健康度 (唯讀安全，不覆蓋資料)';
+      }
+    });
+  }
+
+  // 從舊 localStorage 強制重新遷移 - 暫時停用（安全防線：完整備份還原機制完成前不開放）
+  const btnForceReimportLocalStorage = document.getElementById('btnForceReimportLocalStorage');
+  if (btnForceReimportLocalStorage) {
+    btnForceReimportLocalStorage.disabled = true;
+    btnForceReimportLocalStorage.style.opacity = '0.5';
+    btnForceReimportLocalStorage.style.cursor = 'not-allowed';
+    btnForceReimportLocalStorage.title = '暫時停用：防止覆蓋您遷移後修改或刪除的最新資料';
+    btnForceReimportLocalStorage.addEventListener('click', (e) => {
+      e.preventDefault();
+      alert('⚠️ 此功能目前依安全考量暫時鎖定。\n\n原因：在完整的 JSON 備份還原機制完成前，強制重新遷移會以舊資料覆蓋您在遷移後刪除或修改的項目。\n\n請使用「匯出 JSON 備份」儲存最新資料。');
+    });
+  }
+
   const btnImport = document.getElementById('btnImportData');
   const fileInputImport = document.getElementById('fileInputImportData');
   if (btnImport && fileInputImport) {
@@ -1175,15 +1497,64 @@ function bindSettingsEvents() {
 
   const btnClear = document.getElementById('btnClearAllData');
   if (btnClear) {
-    btnClear.addEventListener('click', () => {
-      if (confirm("確定要重設所有資料回預設值嗎？自訂的收藏與紀錄將會被重置！")) {
-        localStorage.clear();
-        location.reload();
+    btnClear.addEventListener('click', async () => {
+      if (!confirm("⚠️ 確定要清除所有資料嗎？\n\n此操作無法復原！所有自訂的收藏與紀錄將被清除。")) return;
+
+      // 安全防線：清除前自動備份現有資料
+      if (!confirm("📥 第二步確認：清除前將自動下載 IndexedDB 現有資料的 JSON 備份檔。是否繼續？")) return;
+
+      // 先下載 IndexedDB 完整備份（保留 migration_meta 中的遷移前快照）
+      try {
+        await exportAllDataAsJson();
+      } catch (e) {
+        if (!confirm('⚠️ 備份下載失敗。您確定不保留任何備份，直接清除嗎？')) return;
       }
+
+      if (typeof DB !== 'undefined') {
+        // 清空業務資料表
+        await DB.clear('places');
+        await DB.clear('history');
+        await DB.clear('lists');
+        // 只清除偏好設定，保留 initialized 與 migration_meta
+        await DB.delete('settings', 'preferences');
+        await DB.delete('settings', 'initialized');
+        // 不刪除 migration_meta — 此表保存遷移前完整 localStorage 快照，是最後一道安全防線！
+      }
+      // localStorage 中的凍結標記也一併清除（重開後可重新遷移）
+      localStorage.removeItem('WTE_MIGRATED_FROZEN');
+      localStorage.removeItem('WTE_MIGRATED_AT');
+      location.reload();
     });
   }
 
-  // Google Takeout 檔案上傳解析器
+  // 避免連續抽中同一家設定切換
+  const chkAvoid = document.getElementById('chkAvoidConsecutive');
+  if (chkAvoid) {
+    chkAvoid.addEventListener('change', (e) => {
+      AppState.settings.avoidConsecutivePicks = e.target.checked;
+      saveDataToStorage();
+    });
+  }
+
+  // 未評分店家納入抽籤設定切換
+  const chkUnrated = document.getElementById('chkIncludeUnrated');
+  if (chkUnrated) {
+    chkUnrated.addEventListener('change', (e) => {
+      AppState.settings.includeUnratedPlaces = e.target.checked;
+      saveDataToStorage();
+      updateCandidateCountUI();
+    });
+  }
+
+  // 檢查並清理現有異常錯位店家資料
+  const btnInspectAnomalies = document.getElementById('btnInspectAnomalies');
+  if (btnInspectAnomalies) {
+    btnInspectAnomalies.addEventListener('click', () => {
+      inspectAnomalousPlaces();
+    });
+  }
+
+  // Google Takeout / CSV 檔案上傳解析器
   const takeoutDropzone = document.getElementById('takeoutDropzone');
   const fileInputTakeout = document.getElementById('fileInputTakeout');
   if (takeoutDropzone && fileInputTakeout) {
@@ -1208,6 +1579,14 @@ function syncSettingsView() {
   const radio = document.querySelector(`input[name="excludeRule"][value="${settings.excludeRule}"]`);
   if (radio) radio.checked = true;
 
+  // 避免連續抽中同一家
+  const chkAvoid = document.getElementById('chkAvoidConsecutive');
+  if (chkAvoid) chkAvoid.checked = settings.avoidConsecutivePicks !== false;
+
+  // 未評分店家納入抽籤
+  const chkUnrated = document.getElementById('chkIncludeUnrated');
+  if (chkUnrated) chkUnrated.checked = settings.includeUnratedPlaces !== false;
+
   // 不喜歡料理
   document.querySelectorAll('.dislike-tag').forEach(tag => {
     tag.classList.toggle('selected', settings.dislikes.includes(tag.dataset.value));
@@ -1230,8 +1609,94 @@ function syncSettingsView() {
 }
 
 // ==========================================================
-// Google Maps 匯入引擎 (核心需求支援)
+// CSV & Google Takeout 安全匯入引擎 (RFC 4180 標準解析 + 預覽對應)
 // ==========================================================
+
+// RFC 4180 標準 CSV 解析器 (支援 UTF-8 BOM、跳脫引號、引號內逗號與換行)
+function parseRFC4180Csv(text) {
+  if (!text) return { headers: [], rows: [] };
+  // 清理 UTF-8 BOM
+  if (text.charCodeAt(0) === 0xFEFF) {
+    text = text.slice(1);
+  }
+
+  const rows = [];
+  let currentRow = [];
+  let currentCell = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+
+    if (inQuotes) {
+      if (char === '"') {
+        if (nextChar === '"') {
+          currentCell += '"';
+          i++; // 跳過連續雙引號
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        currentCell += char;
+      }
+    } else {
+      if (char === '"') {
+        inQuotes = true;
+      } else if (char === ',') {
+        currentRow.push(currentCell.trim());
+        currentCell = '';
+      } else if (char === '\r') {
+        if (nextChar === '\n') i++;
+        currentRow.push(currentCell.trim());
+        if (currentRow.some(c => c.length > 0)) rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+      } else if (char === '\n') {
+        currentRow.push(currentCell.trim());
+        if (currentRow.some(c => c.length > 0)) rows.push(currentRow);
+        currentRow = [];
+        currentCell = '';
+      } else {
+        currentCell += char;
+      }
+    }
+  }
+
+  if (currentCell.length > 0 || currentRow.length > 0) {
+    currentRow.push(currentCell.trim());
+    if (currentRow.some(c => c.length > 0)) rows.push(currentRow);
+  }
+
+  if (rows.length === 0) return { headers: [], rows: [] };
+  const headers = rows[0].map(h => h.replace(/^["']|["']$/g, '').trim());
+  return { headers, rows: rows.slice(1) };
+}
+
+// 行政區識別推導 (支援台中 29 區與已知縣市主要行政區)
+function extractDistrictFromText(text) {
+  if (!text || typeof text !== 'string') return null;
+  const m = text.match(/(西屯區|南屯區|北區|西區|中區|東區|南區|北屯區|大里區|太平區|豐原區|潭子區|大雅區|沙鹿區|清水區|梧棲區|龍井區|大肚區|烏日區|霧峰區|神岡區|后里區|石岡區|東勢區|新社區|和平區|外埔區|大安區|大甲區|仁德區|東區|安平區|中西區|新營區|板橋區|信義區|大安區|中山區)/);
+  return m ? m[1] : null;
+}
+
+// 匯入預覽暫存 Context
+const CsvPreviewContext = {
+  fileName: '',
+  headers: [],
+  rows: [],
+  isGoogleTakeout: false,
+  mapColName: -1,
+  mapColAddress: -1,
+  mapColNote: -1,
+  mapColUrl: -1,
+  validPlaces: [],
+  duplicateCount: 0,
+  invalidCount: 0,
+  invalidSamples: []
+};
+
+// 處理檔案上傳入口
 function handleGoogleTakeoutUpload(e) {
   const file = e.target.files[0];
   if (!file) return;
@@ -1240,185 +1705,500 @@ function handleGoogleTakeoutUpload(e) {
   reader.onload = function(evt) {
     try {
       const content = evt.target.result;
-      let importedCount = 0;
-
-      if (file.name.endsWith('.json') || file.name.endsWith('.geojson')) {
+      if (file.name.endsWith('.csv')) {
+        const { headers, rows } = parseRFC4180Csv(content);
+        if (rows.length === 0) {
+          alert("⚠️ 檔案中未發現有效資料列！請確認 CSV 檔案內容是否完整。");
+          return;
+        }
+        openCsvPreviewModal({ headers, rows, isJson: false }, file);
+      } else if (file.name.endsWith('.json') || file.name.endsWith('.geojson')) {
         const jsonData = JSON.parse(content);
-        importedCount = parseGoogleTakeoutJson(jsonData);
-      } else if (file.name.endsWith('.csv')) {
-        importedCount = parseGoogleTakeoutCsv(content);
+        const { headers, rows } = convertGeoJsonToTable(jsonData);
+        if (rows.length === 0) {
+          alert("⚠️ 檔案中未發現有效地點！請確認為 Google Takeout JSON/GeoJSON 檔案。");
+          return;
+        }
+        openCsvPreviewModal({ headers, rows, isJson: true }, file);
       } else {
         alert("不支援的檔案格式，請上傳 Google 匯出的 .json、.geojson 或 .csv 檔案！");
-        return;
-      }
-
-      if (importedCount > 0) {
-        SoundEngine.playFanfare();
-        saveDataToStorage();
-        alert(`🎉 恭喜！成功從 Google Maps 匯入 ${importedCount} 家口袋名單餐廳！已加入你的收藏並可立即抽籤！`);
-        // 關閉 Modal
-        closeModals();
-        // 切換到收藏頁
-        document.querySelector('.nav-tab-btn[data-tab="favorites"]').click();
-      } else {
-        alert("未在此檔案中找到有效的餐廳地點資料，請確認檔案為 Google Takeout 匯出的已儲存地點。");
       }
     } catch (err) {
-      console.error("解析 Google 檔案出錯：", err);
-      alert("解析檔案失敗，格式可能不符：" + err.message);
+      console.error("解析匯入檔案失敗:", err);
+      alert("解析檔案失敗：" + err.message);
     }
   };
   reader.readAsText(file);
 }
 
-// 解析 Google Takeout GeoJSON / JSON 格式
-function parseGoogleTakeoutJson(data) {
-  let count = 0;
+// 將 GeoJSON / JSON 轉為統一表格結構以利共用預覽與驗證
+function convertGeoJsonToTable(data) {
   const features = data.features || (Array.isArray(data) ? data : []);
+  const headers = ['Title', 'Address', 'Comment', 'Google Maps URL'];
+  const rows = [];
 
   features.forEach(feat => {
     const props = feat.properties || feat;
-    const name = props.Title || props.name || props["Business Name"] || "未命名地點";
+    const name = props.Title || props.name || props["Business Name"] || "";
     const address = (props.Location && props.Location.Address) || props.address || props["Formatted Address"] || "";
-    
-    // 經緯度解析
-    let lng = 120.6445;
-    let lat = 24.1632;
-    if (feat.geometry && feat.geometry.coordinates) {
-      lng = feat.geometry.coordinates[0];
-      lat = feat.geometry.coordinates[1];
-    } else if (props.Location && props.Location["Geo Coordinates"]) {
-      lat = props.Location["Geo Coordinates"].Latitude || lat;
-      lng = props.Location["Geo Coordinates"].Longitude || lng;
-    }
-
-    const note = props.Comment || props.note || "從 Google Maps 收藏匯入";
-    const googleUrl = props["Google Maps URL"] || props.url || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(name)}`;
-
-    // 檢查是否已存在
-    const exists = AppState.restaurants.find(r => r.name === name);
-    if (!exists) {
-      AppState.restaurants.push({
-        id: `google-imp-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
-        name: name,
-        category: "精選美食",
-        tags: ["Google收藏", "想吃"],
-        rating: 4.5,
-        reviewCount: 999,
-        priceMin: 150,
-        priceMax: 350,
-        avgPrice: 240,
-        area: "台中/台北",
-        address: address,
-        lat: lat,
-        lng: lng,
-        distanceKm: 1.5,
-        isOpen: true,
-        openHours: "營業中",
-        paymentMethods: ["現金", "Line Pay"],
-        photo: "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=700&auto=format&fit=crop&q=80",
-        description: note,
-        isFavorite: true,
-        customList: "想吃",
-        googlePlaceUrl: googleUrl
-      });
-      count++;
+    const note = props.Comment || props.note || "";
+    const url = props["Google Maps URL"] || props.url || "";
+    if (name) {
+      rows.push([name, address, note, url]);
     }
   });
 
-  return count;
+  return { headers, rows };
 }
 
-// 解析 Google CSV 格式
-function parseGoogleTakeoutCsv(csvText) {
-  const lines = csvText.split('\n');
-  let count = 0;
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i].trim();
-    if (!line) continue;
-    const parts = line.split(',');
-    const title = parts[0]?.replace(/"/g, '').trim();
-    if (title && !AppState.restaurants.find(r => r.name === title)) {
-      AppState.restaurants.push({
-        id: `csv-imp-${Date.now()}-${i}`,
-        name: title,
-        category: "在地美食",
-        tags: ["Google收藏", "想吃"],
-        rating: 4.4,
-        reviewCount: 888,
-        priceMin: 120,
-        priceMax: 300,
-        avgPrice: 200,
-        area: "西屯區",
-        address: parts[4] || "",
-        lat: 24.1632,
-        lng: 120.6445,
-        distanceKm: 1.2,
-        isOpen: true,
-        openHours: "營業中",
-        paymentMethods: ["現金"],
-        photo: "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=700&auto=format&fit=crop&q=80",
-        description: parts[1] || "Google 地圖收藏店家",
-        isFavorite: true,
-        customList: "想吃",
-        googlePlaceUrl: parts[2] || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(title)}`
+// 開啟預覽與欄位對應視窗
+function openCsvPreviewModal({ headers, rows, isJson }, file) {
+  CsvPreviewContext.fileName = file.name;
+  CsvPreviewContext.headers = headers;
+  CsvPreviewContext.rows = rows;
+
+  // 自動辨識欄位
+  let isGoogleTakeout = isJson;
+  let nameIdx = -1;
+  let addrIdx = -1;
+  let noteIdx = -1;
+  let urlIdx = -1;
+
+  headers.forEach((h, idx) => {
+    const lower = h.toLowerCase().trim();
+    if (lower === 'title' || lower === 'business name') {
+      nameIdx = idx;
+      isGoogleTakeout = true;
+    } else if (nameIdx === -1 && (lower.includes('店名') || lower.includes('餐廳') || lower.includes('名稱') || lower === 'name')) {
+      nameIdx = idx;
+    }
+
+    if (lower === 'address' || lower === 'formatted address' || lower.includes('地址')) {
+      addrIdx = idx;
+    }
+    if (lower === 'note' || lower === 'comment' || lower.includes('備註') || lower.includes('描述') || lower.includes('心得')) {
+      noteIdx = idx;
+    }
+    if (lower === 'url' || lower === 'google maps url' || lower.includes('網址') || lower.includes('連結')) {
+      urlIdx = idx;
+    }
+  });
+
+  // 如果未匹配到店名，預設取第 0 欄
+  if (nameIdx === -1 && headers.length > 0) nameIdx = 0;
+
+  CsvPreviewContext.isGoogleTakeout = isGoogleTakeout;
+  CsvPreviewContext.mapColName = nameIdx;
+  CsvPreviewContext.mapColAddress = addrIdx;
+  CsvPreviewContext.mapColNote = noteIdx;
+  CsvPreviewContext.mapColUrl = urlIdx;
+
+  // 填入 UI 標籤與下拉選單
+  const fileNameEl = document.getElementById('csvFileNameText');
+  const typeBadgeEl = document.getElementById('csvFileTypeBadge');
+  if (fileNameEl) fileNameEl.textContent = `檔案名稱：${file.name} (共 ${rows.length} 列資料)`;
+  if (typeBadgeEl) {
+    typeBadgeEl.textContent = isGoogleTakeout ? 'Google Takeout 格式' : '自訂 CSV 格式';
+    typeBadgeEl.style.background = isGoogleTakeout ? '#F3E5F5' : '#E3F2FD';
+    typeBadgeEl.style.color = isGoogleTakeout ? '#7B1FA2' : '#1565C0';
+  }
+
+  // 填充欄位對應下拉選單
+  populateMappingDropdown('mapColName', headers, nameIdx, true);
+  populateMappingDropdown('mapColAddress', headers, addrIdx, false);
+  populateMappingDropdown('mapColNote', headers, noteIdx, false);
+  populateMappingDropdown('mapColUrl', headers, urlIdx, false);
+
+  // 綁定欄位變更即時重整預覽
+  bindCsvMappingChangeEvents();
+
+  // 重新計算並渲染預覽表格
+  renderCsvPreviewUI();
+
+  // 顯示 Modal
+  const modal = document.getElementById('modalCsvPreview');
+  if (modal) modal.classList.add('active');
+}
+
+// 填充單個欄位對應下拉選單
+function populateMappingDropdown(selectId, headers, selectedIdx, isRequired) {
+  const select = document.getElementById(selectId);
+  if (!select) return;
+  select.innerHTML = '';
+
+  if (!isRequired) {
+    const optNone = document.createElement('option');
+    optNone.value = '-1';
+    optNone.textContent = '（無對應此欄位）';
+    select.appendChild(optNone);
+  }
+
+  headers.forEach((h, idx) => {
+    const opt = document.createElement('option');
+    opt.value = idx.toString();
+    opt.textContent = `第 ${idx + 1} 欄: ${h || '(未命名標頭)'}`;
+    if (idx === selectedIdx) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+// 綁定欄位變更事件
+function bindCsvMappingChangeEvents() {
+  ['mapColName', 'mapColAddress', 'mapColNote', 'mapColUrl'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el && !el.dataset.bound) {
+      el.dataset.bound = 'true';
+      el.addEventListener('change', () => {
+        CsvPreviewContext[id] = parseInt(el.value, 10);
+        renderCsvPreviewUI();
       });
-      count++;
+    }
+  });
+
+  const btnCancel = document.getElementById('btnCancelCsvImport');
+  if (btnCancel && !btnCancel.dataset.bound) {
+    btnCancel.dataset.bound = 'true';
+    btnCancel.addEventListener('click', () => closeModals());
+  }
+
+  const btnConfirm = document.getElementById('btnConfirmCsvImport');
+  if (btnConfirm && !btnConfirm.dataset.bound) {
+    btnConfirm.dataset.bound = 'true';
+    btnConfirm.addEventListener('click', () => confirmCsvImportToDatabase());
+  }
+}
+
+// 執行驗證並渲染預覽表格與統計
+function renderCsvPreviewUI() {
+  const { rows, mapColName, mapColAddress, mapColNote, mapColUrl, isGoogleTakeout } = CsvPreviewContext;
+  const existingNamesSet = new Set(AppState.restaurants.map(r => (r.name || '').trim().toLowerCase()));
+
+  const validPlaces = [];
+  let duplicateCount = 0;
+  let invalidCount = 0;
+  const invalidSamples = [];
+  const previewRowsData = [];
+
+  rows.forEach((row, rowIdx) => {
+    const rawName = mapColName >= 0 && row[mapColName] ? row[mapColName].trim() : '';
+    const rawAddress = mapColAddress >= 0 && row[mapColAddress] ? row[mapColAddress].trim() : '';
+    const rawNote = mapColNote >= 0 && row[mapColNote] ? row[mapColNote].trim() : '';
+    const rawUrl = mapColUrl >= 0 && row[mapColUrl] ? row[mapColUrl].trim() : '';
+
+    // 嚴格店名驗證：非空、不可為純數字、不可為純浮點數座標
+    if (!rawName) {
+      invalidCount++;
+      if (invalidSamples.length < 3) invalidSamples.push(`第 ${rowIdx + 1} 列：店名為空`);
+      return;
+    }
+    if (/^\d+$/.test(rawName)) {
+      invalidCount++;
+      if (invalidSamples.length < 3) invalidSamples.push(`第 ${rowIdx + 1} 列：店名不可為純數字 ID (值為「${rawName}」)`);
+      return;
+    }
+    if (/^-?\d+(\.\d+)?$/.test(rawName)) {
+      invalidCount++;
+      if (invalidSamples.length < 3) invalidSamples.push(`第 ${rowIdx + 1} 列：店名不可為座標或數字浮點數 (值為「${rawName}」)`);
+      return;
+    }
+
+    // 重複檢查
+    const normName = rawName.toLowerCase();
+    const isDup = existingNamesSet.has(normName);
+    if (isDup) {
+      duplicateCount++;
+      if (previewRowsData.length < 8) {
+        previewRowsData.push({ status: '⚠️ 已存在 (跳過)', name: rawName, district: '重複', address: rawAddress, source: '已存在' });
+      }
+      return;
+    }
+
+    // 地區推導：唯有從地址或店名成功辨識時才填入，否則為「待確認」，絕不硬塞西屯區！
+    const inferredDistrict = extractDistrictFromText(rawAddress) || extractDistrictFromText(rawName) || '待確認';
+
+    const newPlace = {
+      id: `imp-${Date.now()}-${rowIdx}-${Math.random().toString(36).substring(2, 6)}`,
+      name: rawName,
+      category: isGoogleTakeout ? "Google收藏" : "自訂匯入",
+      tags: isGoogleTakeout ? ["Google收藏", "想吃"] : ["CSV匯入", "想吃"],
+      rating: null,          // 絕無假評分！
+      reviewCount: null,     // 絕無假評論數！
+      priceMin: null,
+      priceMax: null,
+      avgPrice: null,        // 絕無假預算！
+      area: inferredDistrict,
+      district: inferredDistrict,
+      address: rawAddress || '',
+      lat: 24.1632,
+      lng: 120.6445,
+      distanceKm: null,
+      isOpen: null,          // 絕無假營業狀態！
+      openHours: '',
+      paymentMethods: ["現金"],
+      photo: "https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=700&auto=format&fit=crop&q=80",
+      description: rawNote || (isGoogleTakeout ? "從 Google Maps 收藏匯入" : "從自訂 CSV 匯入"),
+      isFavorite: true,
+      customList: "想吃",
+      googlePlaceUrl: rawUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(rawName + (rawAddress ? ' ' + rawAddress : ''))}`,
+      source: isGoogleTakeout ? 'google_takeout' : 'csv',
+      isDemo: false,
+      createdAt: new Date().toISOString()
+    };
+
+    validPlaces.push(newPlace);
+    existingNamesSet.add(normName); // 避免檔案內同批重複
+
+    if (previewRowsData.length < 8) {
+      previewRowsData.push({ status: '✅ 可匯入', name: rawName, district: inferredDistrict, address: rawAddress, source: isGoogleTakeout ? 'Google' : 'CSV' });
+    }
+  });
+
+  CsvPreviewContext.validPlaces = validPlaces;
+  CsvPreviewContext.duplicateCount = duplicateCount;
+  CsvPreviewContext.invalidCount = invalidCount;
+
+  // 渲染統計資訊
+  const statsEl = document.getElementById('csvSummaryStats');
+  if (statsEl) {
+    statsEl.innerHTML = `
+      <span style="background: #E8F5E9; color: #2E7D32; padding: 4px 10px; border-radius: var(--radius-sm); font-weight: 700;">✅ 可匯入：${validPlaces.length} 筆</span>
+      <span style="background: #FFF3E0; color: #E65100; padding: 4px 10px; border-radius: var(--radius-sm); font-weight: 700;">⚠️ 重複跳過：${duplicateCount} 筆</span>
+      <span style="background: ${invalidCount > 0 ? '#FFEBEE' : '#F5F5F5'}; color: ${invalidCount > 0 ? '#C62828' : '#757575'}; padding: 4px 10px; border-radius: var(--radius-sm); font-weight: 700;">❌ 格式不符：${invalidCount} 筆</span>
+    `;
+  }
+
+  // 渲染錯誤提示框
+  const errorBox = document.getElementById('csvErrorNotice');
+  if (errorBox) {
+    if (invalidCount > 0) {
+      errorBox.style.display = 'block';
+      errorBox.innerHTML = `<strong>⚠️ 發現 ${invalidCount} 筆資料未通過檢驗（已自動排除）：</strong><br>${invalidSamples.join('<br>')}${invalidCount > 3 ? `<br>...其餘 ${invalidCount - 3} 筆亦被略過。` : ''}`;
+    } else {
+      errorBox.style.display = 'none';
     }
   }
-  return count;
+
+  // 渲染表格內容
+  const tbody = document.getElementById('csvPreviewTableBody');
+  if (tbody) {
+    tbody.innerHTML = '';
+    if (previewRowsData.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="5" style="text-align: center; padding: 20px; color: #999;">未找到任何可讀取的資料列</td></tr>`;
+    } else {
+      previewRowsData.forEach(p => {
+        const tr = document.createElement('tr');
+        tr.style.borderBottom = '1px solid #EEE';
+        tr.innerHTML = `
+          <td style="padding: 6px 8px;">${p.status}</td>
+          <td style="padding: 6px 8px; font-weight: 700; color: #2C3E50;">${p.name}</td>
+          <td style="padding: 6px 8px; color: ${p.district === '待確認' ? '#E65100' : '#27AE60'}; font-weight: 600;">${p.district}</td>
+          <td style="padding: 6px 8px; color: #7F8C8D; max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${p.address || '（未註記）'}</td>
+          <td style="padding: 6px 8px; font-size: 0.75rem; color: #888;">${p.source}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+    }
+  }
+
+  // 更新確認按鈕文字
+  const btnConfirm = document.getElementById('btnConfirmCsvImport');
+  if (btnConfirm) {
+    btnConfirm.disabled = validPlaces.length === 0;
+    btnConfirm.textContent = validPlaces.length > 0 ? `💾 確認寫入資料庫 (${validPlaces.length} 筆有效店家)` : `無有效店家可匯入`;
+  }
 }
 
-// 一鍵載入示範 Google Takeout 資料 (讓使用者秒驗收功能)
+// 使用者確認匯入：安全事務寫入 IndexedDB
+async function confirmCsvImportToDatabase() {
+  const { validPlaces, fileName } = CsvPreviewContext;
+  if (!validPlaces || validPlaces.length === 0) {
+    alert("目前沒有可匯入的有效店家資料！");
+    return;
+  }
+
+  const btnConfirm = document.getElementById('btnConfirmCsvImport');
+  if (btnConfirm) {
+    btnConfirm.disabled = true;
+    btnConfirm.textContent = '正在寫入資料庫中...';
+  }
+
+  try {
+    // 嚴格以 IndexedDB 事務原子性批次寫入
+    if (typeof DB !== 'undefined') {
+      await DB.bulkPut('places', validPlaces);
+    }
+    
+    // 成功後加入全域狀態記憶體
+    AppState.restaurants.push(...validPlaces);
+    
+    SoundEngine.playFanfare();
+    closeModals();
+    updateCandidateCountUI();
+    renderFavoritesView();
+    renderExploreList();
+
+    alert(`🎉 匯入成功！\n\n已成功將 ${validPlaces.length} 家店家安全存入 IndexedDB 本地資料庫！\n檔案：${fileName}\n來源已標記為正規來源，無任何假評分或寫死行政區。`);
+    
+    // 切換到收藏清單檢視
+    const favTabBtn = document.querySelector('.nav-tab-btn[data-tab="favorites"]');
+    if (favTabBtn) favTabBtn.click();
+  } catch (err) {
+    console.error("寫入 IndexedDB 失敗:", err);
+    alert(`❌ 匯入資料庫失敗：${err.message}\n系統已中斷交易，未留下部分錯誤資料！`);
+  } finally {
+    if (btnConfirm) {
+      btnConfirm.disabled = false;
+      btnConfirm.textContent = '💾 確認寫入資料庫';
+    }
+  }
+}
+
+// 一鍵載入示範 Google Takeout 資料 (乾淨正規格式，不塞假數據)
 function loadDemoGoogleTakeout() {
   fetch('./sample_google_maps_saved_places.json')
     .then(res => res.json())
     .then(data => {
-      const added = parseGoogleTakeoutJson(data);
-      SoundEngine.playFanfare();
-      saveDataToStorage();
-      alert(`🎉 成功載入示範 Google Maps 收藏清單！已新增 ${added} 家人氣推薦美食！`);
-      closeModals();
-      document.querySelector('.nav-tab-btn[data-tab="favorites"]').click();
+      openCsvPreviewModal(convertGeoJsonToTable(data), { name: 'sample_google_maps_saved_places.json' });
     })
     .catch(err => {
-      console.warn("讀取本機示範檔失敗，採用內建模擬：", err);
-      // 內建備用
-      const demoList = [
-        { name: "刁民酸菜魚 逢甲店", area: "西屯區", rating: 4.5, lat: 24.1788, lng: 120.6456 },
-        { name: "阿裕牛肉涮涮鍋", area: "仁德區", rating: 4.6, lat: 22.9567, lng: 120.2541 },
-        { name: "屋馬燒肉 國安店", area: "西屯區", rating: 4.5, lat: 24.1914, lng: 120.6072 }
-      ];
-      demoList.forEach(d => {
-        const item = AppState.restaurants.find(r => r.name.includes(d.name));
-        if (item) item.isFavorite = true;
-      });
-      saveDataToStorage();
-      alert("🎉 已成功將示範 Google 收藏清單標記為收藏！");
-      closeModals();
-      document.querySelector('.nav-tab-btn[data-tab="favorites"]').click();
+      console.warn("讀取本機示範檔失敗:", err);
+      alert("讀取示範檔案失敗：" + err.message);
     });
 }
 
-// 匯出全部資料為 JSON
-function exportAllDataAsJson() {
+// 檢查並清理現有異常店家資料 (如純數字店名、錯位浮點數描述)
+function inspectAnomalousPlaces() {
+  const anomalies = AppState.restaurants.filter(r => {
+    if (!r.name) return true;
+    const name = r.name.trim();
+    if (/^\d+$/.test(name)) return true; // 純數字店名 (如 17)
+    if (/^-?\d+(\.\d+)?$/.test(name)) return true; // 座標數字店名
+    if (r.reviewCount === 888 && r.rating === 4.4 && r.id && r.id.startsWith('csv-imp-')) return true; // 舊版 Bug 特徵
+    if (r.description && /^-?\d+\.\d+$/.test(r.description.trim())) return true; // 浮點數當描述 (如 227.3956549)
+    return false;
+  });
+
+  if (anomalies.length === 0) {
+    alert("✅ 檢查完成！您的資料庫非常乾淨，未發現任何純數字店名、錯位浮點數等異常資料。");
+    return;
+  }
+
+  const summary = anomalies.map(a => `• 【${a.name}】 (地區: ${a.area || '未知'}, 描述: ${a.description || '無'})`).join('\n');
+  const confirmed = confirm(`⚠️ 檢查發現 ${anomalies.length} 筆先前錯誤匯入的異常店家資料：\n\n${summary}\n\n是否要自 IndexedDB 中安全移除這些異常資料？\n（此操作只清理上述異常項目，不會影響您的其他合法店家）`);
+
+  if (!confirmed) return;
+
+  (async () => {
+    try {
+      if (typeof DB !== 'undefined') {
+        for (let a of anomalies) {
+          await DB.delete('places', a.id);
+        }
+      }
+      const anomalyIds = new Set(anomalies.map(a => a.id));
+      AppState.restaurants = AppState.restaurants.filter(r => !anomalyIds.has(r.id));
+      updateCandidateCountUI();
+      renderFavoritesView();
+      renderExploreList();
+      alert(`🎉 已成功自 IndexedDB 清除 ${anomalies.length} 筆異常店家！`);
+    } catch (e) {
+      alert("清除異常資料失敗：" + e.message);
+    }
+  })();
+}
+
+// 更新設定頁面的 IndexedDB 遷移狀態與即時統計
+async function updateMigrationUI() {
+  const detailEl = document.getElementById('migrationDetailText');
+  const badgeEl = document.getElementById('badgeStorageEngine');
+  if (!detailEl) return;
+
+  if (typeof DB === 'undefined') {
+    detailEl.textContent = '未啟用 IndexedDB 模組，使用 localStorage 暫存。';
+    if (badgeEl) badgeEl.textContent = 'localStorage 模式';
+    return;
+  }
+
+  try {
+    const v = await DB.verifyIntegrity();
+    const status = await DB.getMigrationStatus();
+    if (v.healthy && status.migrated) {
+      detailEl.innerHTML = `
+        <span style="color: #2E7D32; font-weight: 700;">✅ 資料已安全託管於 IndexedDB 本地資料庫 (Single Source of Truth)</span><br>
+        • 地點總數：<strong>${v.placesCount}</strong> 筆 (使用者真實資料: ${v.userPlacesCount} 筆 / 預設示範: ${v.demoPlacesCount} 筆)<br>
+        • 歷史紀錄：<strong>${v.historyCount}</strong> 筆 (使用者紀錄: ${v.userHistoryCount} 筆 / 示範: ${v.demoHistoryCount} 筆)<br>
+        • 分類清單：<strong>${v.listsCount}</strong> 組清單<br>
+        • 首次遷移：${status.log && status.log.completedAt ? new Date(status.log.completedAt).toLocaleString() : '已完成'}
+      `;
+      if (badgeEl) {
+        badgeEl.textContent = 'IndexedDB 運作中';
+        badgeEl.style.background = '#E8F5E9';
+        badgeEl.style.color = '#2E7D32';
+      }
+    } else {
+      detailEl.textContent = '尚未執行遷移或遷移未完成，點擊下方按鈕可檢查或安全遷移。';
+      if (badgeEl) {
+        badgeEl.textContent = '待遷移';
+        badgeEl.style.background = '#FFF3E0';
+        badgeEl.style.color = '#E65100';
+      }
+    }
+  } catch (e) {
+    detailEl.textContent = '讀取資料庫狀態異常：' + e.message;
+  }
+}
+
+// 匯出全部資料為標準 JSON 備份檔 (WhatToEat_Backup_YYYY-MM-DD_HH-mm.json)
+async function exportAllDataAsJson() {
+  let places = AppState.restaurants;
+  let history = AppState.history;
+  let lists = AppState.customLists;
+  let settings = AppState.settings;
+
+  if (typeof DB !== 'undefined') {
+    try {
+      places = await DB.getAll('places');
+      history = await DB.getAll('history');
+      const listObjs = await DB.getAll('lists');
+      if (listObjs && listObjs.length > 0) lists = listObjs.map(l => l.name);
+      const settingsObj = await DB.get('settings', 'preferences');
+      if (settingsObj && settingsObj.value) settings = settingsObj.value;
+    } catch (e) {
+      console.warn("從 IndexedDB 取得最新備份資料失敗，改用記憶體快取:", e);
+    }
+  }
+
   const exportPayload = {
     appName: "WhatToEat",
-    version: "2.0",
+    version: "2.0.0",
     exportDate: new Date().toISOString(),
-    restaurants: AppState.restaurants,
-    history: AppState.history,
-    customLists: AppState.customLists,
-    settings: AppState.settings
+    summary: {
+      placesCount: places.length,
+      userPlacesCount: places.filter(p => !p.isDemo).length,
+      demoPlacesCount: places.filter(p => p.isDemo).length,
+      historyCount: history.length,
+      listsCount: lists.length
+    },
+    data: {
+      places: places,
+      history: history,
+      lists: lists,
+      settings: settings
+    }
   };
 
-  const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `吃什麼_資料備份_${new Date().toISOString().slice(0, 10)}.json`;
-  a.click();
-  URL.revokeObjectURL(url);
+  const filename = typeof DB !== 'undefined' ? DB.getBackupFilename() : `WhatToEat_Backup_${new Date().toISOString().slice(0, 10)}.json`;
+  if (typeof DB !== 'undefined') {
+    DB.downloadJsonFile(exportPayload, filename);
+  } else {
+    const blob = new Blob([JSON.stringify(exportPayload, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    a.click();
+    URL.revokeObjectURL(url);
+  }
 }
 
 // 匯入備份 JSON
@@ -1464,7 +2244,7 @@ function bindModals() {
   // 新增紀錄表單送出
   const formAddHist = document.getElementById('formAddHistory');
   if (formAddHist) {
-    formAddHist.addEventListener('submit', (e) => {
+    formAddHist.addEventListener('submit', async (e) => {
       e.preventDefault();
       const selectRest = document.getElementById('addHistRestSelect');
       const dateVal = document.getElementById('addHistDate').value;
@@ -1483,24 +2263,40 @@ function bindModals() {
         rArea = matchedRest.area;
       }
 
-      AppState.history.unshift({
+      const isSpot = matchedRest && matchedRest.type === 'spot';
+      const newEntry = {
         id: `hist-${Date.now()}`,
+        placeId: matchedRest ? matchedRest.id : null,
+        placeName: rName,
         restaurantId: matchedRest ? matchedRest.id : null,
         restaurantName: rName,
+        placeType: isSpot ? 'spot' : 'food',
+        actionType: isSpot ? 'visit' : 'eat',
         date: dateVal,
         dayOfWeek: getDayOfWeek(dateVal),
         rating: ratingVal,
         cost: costVal,
         area: rArea,
         notes: notesVal || "美味的一餐！",
-        photo: rPhoto
-      });
+        photo: rPhoto,
+        isDemo: false,
+        createdAt: new Date().toISOString()
+      };
 
-      saveDataToStorage();
-      SoundEngine.playFanfare();
-      closeModals();
-      renderHistoryView();
-      alert("🎉 成功新增美味紀錄！");
+      try {
+        if (typeof DB !== 'undefined') {
+          await DB.put('history', newEntry);
+        }
+        // 只有資料庫成功儲存後才加入記憶體並重繪畫面
+        AppState.history.unshift(newEntry);
+        SoundEngine.playFanfare();
+        closeModals();
+        renderHistoryView();
+        alert("🎉 成功新增美味紀錄！");
+      } catch (err) {
+        console.error("新增歷史紀錄失敗:", err);
+        alert(`❌ 新增紀錄失敗：${err.message}\n資料未儲存！`);
+      }
     });
   }
 }
@@ -1514,13 +2310,17 @@ function showRestaurantDetailModal(r) {
   const modal = document.getElementById('modalRestDetail');
   if (!modal) return;
 
-  document.getElementById('detailModalImg').src = r.photo;
+  document.getElementById('detailModalImg').src = r.photo || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=700';
   document.getElementById('detailModalTitle').textContent = r.name;
-  document.getElementById('detailModalRating').textContent = `★ ${r.rating} (${r.reviewCount.toLocaleString()} 則評論)`;
-  document.getElementById('detailModalPrice').textContent = `預算：約 $${r.avgPrice}/人 ($${r.priceMin} ~ $${r.priceMax})`;
-  document.getElementById('detailModalAddress').textContent = r.address || '在地人氣名店';
-  document.getElementById('detailModalHours').textContent = `營業時間：${r.openHours || '11:00 - 21:00'}`;
-  document.getElementById('detailModalDesc').textContent = r.description || '';
+  document.getElementById('detailModalRating').textContent = r.rating != null 
+    ? `★ ${r.rating} (${r.reviewCount != null ? r.reviewCount.toLocaleString() : 0} 則評論)` 
+    : '★ 暫無評分與評論';
+  document.getElementById('detailModalPrice').textContent = r.avgPrice != null 
+    ? `預算：約 $${r.avgPrice}/人` 
+    : (r.priceMin && r.priceMax ? `預算：$${r.priceMin} ~ $${r.priceMax}` : '預算：未註記');
+  document.getElementById('detailModalAddress').textContent = r.address || (r.district ? `台中市${r.district}` : '地址待確認');
+  document.getElementById('detailModalHours').textContent = `營業時間：${r.openHours || '暫無營業時間資料'}`;
+  document.getElementById('detailModalDesc').textContent = r.description || '暫無詳細描述';
 
   const googleBtn = document.getElementById('detailModalGoogleLink');
   googleBtn.href = r.googlePlaceUrl || `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name + ' ' + (r.address || ''))}`;

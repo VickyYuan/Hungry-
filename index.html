@@ -11,9 +11,6 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;600;700;800;900&family=Outfit:wght@400;600;700;800&display=swap" rel="stylesheet">
   
-  <!-- Leaflet CSS for Interactive Real Maps -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
-  
   <!-- App Stylesheet -->
   <link rel="stylesheet" href="./style.css">
 </head>
@@ -105,9 +102,9 @@
                   <span style="font-size: 1.4rem;">🎯</span>
                   <h2 class="card-title">今天想怎麼吃？</h2>
                 </div>
-                <!-- 雲端店家 vs 口袋名單切換 -->
+                <!-- 全部店家 vs 口袋名單切換 -->
                 <div class="toggle-switch-pills">
-                  <button class="pill-switch-btn home-source-pill active" data-source="cloud">雲端中的店家</button>
+                  <button class="pill-switch-btn home-source-pill active" data-source="cloud">全部店家名冊</button>
                   <button class="pill-switch-btn home-source-pill" data-source="favs">我的口袋名單</button>
                 </div>
               </div>
@@ -124,16 +121,23 @@
 
               <!-- 篩選表單 Grid -->
               <div class="filter-grid">
-                <div class="filter-item">
-                  <label for="filterArea">📍 地區</label>
-                  <select id="filterArea" class="filter-select">
-                    <option value="全部">全部地區</option>
-                    <option value="西屯區" selected>西屯區</option>
-                    <option value="西區">西區</option>
-                    <option value="北區">北區</option>
-                    <option value="南屯區">南屯區</option>
-                    <option value="仁德區">仁德區 (台南)</option>
-                  </select>
+                <div class="filter-item district-selector-wrap">
+                  <label id="labelFilterDistrict" for="btnDistrictToggle">📍 地區 (多選)</label>
+                  <button type="button" id="btnDistrictToggle" class="filter-select district-selector-btn">
+                    <span id="districtSelectorText">全部地區 (29區)</span>
+                    <span style="font-size: 0.75rem; color: var(--text-muted);">▼</span>
+                  </button>
+                  <!-- 29 區多選下拉面板 -->
+                  <div id="districtDropdownPanel" class="district-dropdown-panel" style="display: none;">
+                    <div class="district-quick-actions">
+                      <button type="button" id="btnDistrictSelectAll" class="district-quick-btn">全選</button>
+                      <button type="button" id="btnDistrictClear" class="district-quick-btn">清除全部</button>
+                      <button type="button" id="btnDistrictPopular" class="district-quick-btn">常用熱門區</button>
+                    </div>
+                    <div id="districtChipsContainer" class="district-chips-grid">
+                      <!-- 由 JS 動態生成 29 區與其他地區 -->
+                    </div>
+                  </div>
                 </div>
 
                 <div class="filter-item">
@@ -191,6 +195,15 @@
                 </div>
               </div>
 
+              <!-- 即時候選店家數量與條件提示 -->
+              <div id="candidatePoolBar" class="candidate-pool-bar">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                  <span>🎯 目前符合條件：<strong id="candidateCountNumber" style="color: var(--accent-color); font-size: 1.05rem;">--</strong> 間</span>
+                  <span id="candidateStatusHint" style="font-size: 0.78rem; color: var(--text-muted);">即時計算中</span>
+                </div>
+                <div id="candidateDiagnosticText" style="display: none; font-size: 0.76rem; color: #D9534F; margin-top: 5px; line-height: 1.4;"></div>
+              </div>
+
               <!-- 抽籤主按鈕 -->
               <button id="btnDrawFood" class="btn-draw-main">
                 <span class="dice-icon">🎲</span> 幫我抽一家！
@@ -201,11 +214,25 @@
             <div class="destiny-card-container">
               <div class="destiny-banner">
                 <span>✨</span>
-                <span>今天的命定美食是...</span>
+                <span id="destinyBannerTitle">今天的命定美食是...</span>
+              </div>
+
+              <!-- 初始未抽選引導狀態 (取代寫死之靜態示範卡片) -->
+              <div id="destinyEmptyDisplay" class="destiny-empty-box">
+                <div class="destiny-empty-mascot">🐱🍽️</div>
+                <h3 style="font-size: 1.25rem; font-weight: 800; color: var(--text-main);">今天吃什麼？命運來決定！</h3>
+                <p style="font-size: 0.88rem; color: var(--text-muted); max-width: 320px; line-height: 1.6;">
+                  挑選喜歡的地區與條件，點擊左側「<strong>幫我抽一家！</strong>」，輪盤將依您的偏好加權選出最佳美味！
+                </p>
+                <div style="display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; margin-top: 6px;">
+                  <span class="meta-tag">#精選口袋名單</span>
+                  <span class="meta-tag">#不重複機制</span>
+                  <span class="meta-tag">#真實Google導航</span>
+                </div>
               </div>
 
               <!-- 抽籤中過渡動畫框 -->
-              <div id="destinyRollingBox" class="destiny-rolling-box">
+              <div id="destinyRollingBox" class="destiny-rolling-box" style="display: none;">
                 <div class="rolling-mascot" style="background: white; display: flex; align-items: center; justify-content: center; font-size: 3rem; box-shadow: var(--shadow-md);">
                   🐱🍜
                 </div>
@@ -213,8 +240,8 @@
                 <p style="font-size: 0.85rem; color: var(--text-muted);">正在依照權重篩選與排除吃過名單...</p>
               </div>
 
-              <!-- 命定卡片內容 -->
-              <div id="destinyCardDisplay" class="destiny-card">
+              <!-- 命定卡片內容 (抽籤結果) -->
+              <div id="destinyCardDisplay" class="destiny-card" style="display: none;">
                 <div class="destiny-img-box">
                   <img id="destinyImg" class="destiny-img" src="https://images.unsplash.com/photo-1621996346565-e3d5d6281788?w=700" alt="命定美食" loading="lazy">
                   <div class="destiny-badge-status">
@@ -282,15 +309,14 @@
                 <input id="exploreSearchInput" type="text" class="explore-search-input" placeholder="搜尋餐廳、地區或料理類別 (例如：拉麵、逢甲、燒肉)...">
               </div>
               <div class="source-switch-pill">
-                <button class="pill-switch-btn explore-source-btn active" data-source="google">Google Maps</button>
-                <button class="pill-switch-btn explore-source-btn" data-source="myList">我的清單</button>
+                <button class="pill-switch-btn explore-source-btn active" data-source="all">全部名冊</button>
+                <button class="pill-switch-btn explore-source-btn" data-source="myList">我的口袋清單</button>
               </div>
             </div>
 
-            <!-- 快速過濾標籤列 -->
+            <!-- 快速過濾標籤列 (可橫向捲動) -->
             <div class="quick-filter-scroll-row">
               <button class="pill-filter-chip active" data-filter="全部">全部餐廳</button>
-              <button class="pill-filter-chip" data-filter="distance">📍 距離最近 (&lt;2km)</button>
               <button class="pill-filter-chip" data-filter="rating">⭐ 評分最高 (4.5+)</button>
               <button class="pill-filter-chip" data-filter="price">💵 價格親民 (&lt;$250)</button>
               <button class="pill-filter-chip" data-filter="日式">🍣 日式料理</button>
@@ -300,20 +326,9 @@
               <button class="pill-filter-chip" data-filter="火鍋">🍲 暖胃鍋物</button>
             </div>
 
-            <!-- 地圖與列表雙欄架構 -->
-            <div class="explore-split-view">
-              <!-- 左邊：真實互動地圖 (整合 Leaflet / Google Maps API) -->
-              <div class="map-container-card">
-                <div id="leafletMapContainer"></div>
-                <button id="btnRefreshMapArea" class="map-floating-overlay-btn">
-                  📍 重查此地圖範圍
-                </button>
-              </div>
-
-              <!-- 右邊：餐廳卡片滾動列表 -->
-              <div id="exploreRestaurantList" class="explore-list-scroll">
-                <!-- 由 JavaScript 動態渲染 -->
-              </div>
+            <!-- 響應式餐廳卡片網格 (電腦版兩欄，手機版單欄) -->
+            <div id="exploreRestaurantList" class="explore-restaurant-grid">
+              <!-- 由 JavaScript 動態渲染 -->
             </div>
           </div>
         </section>
@@ -402,6 +417,16 @@
                   <input type="radio" name="excludeRule" value="none">
                   <span>不排除任何吃過的餐廳</span>
                 </label>
+                <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-subtle); display: flex; flex-direction: column; gap: 8px;">
+                  <label class="custom-radio-row">
+                    <input type="checkbox" id="chkAvoidConsecutive" checked style="accent-color: var(--accent-color); width: 17px; height: 17px;">
+                    <span>🎲 <strong>避免連續抽中同一家</strong> (候選大於 1 間時不重複)</span>
+                  </label>
+                  <label class="custom-radio-row">
+                    <input type="checkbox" id="chkIncludeUnrated" checked style="accent-color: var(--accent-color); width: 17px; height: 17px;">
+                    <span>⭐ <strong>未評分店家納入抽籤</strong> (保留未標註星等之自訂好店)</span>
+                  </label>
+                </div>
               </div>
 
               <!-- 不想吃的料理/食材 (多選) -->
@@ -512,12 +537,54 @@
                 </div>
               </div>
 
+              <!-- 本地資料庫 (IndexedDB) 與安全遷移狀態區塊 -->
+              <div id="migrationCard" style="background: var(--bg-secondary); border: 1.5px solid var(--border-color); border-radius: var(--radius-md); padding: 16px; display: flex; flex-direction: column; gap: 10px;">
+                <div style="display: flex; align-items: center; justify-content: space-between;">
+                  <span class="settings-group-label" style="margin-bottom: 0; display: flex; align-items: center; gap: 6px;">
+                    <span>🛡️</span> 資料庫與安全遷移狀態
+                  </span>
+                  <span id="badgeStorageEngine" style="background: #E8F5E9; color: #2E7D32; font-size: 0.75rem; font-weight: 700; padding: 2px 8px; border-radius: var(--radius-full);">
+                    IndexedDB 運作中
+                  </span>
+                </div>
+
+                <p id="migrationDetailText" style="font-size: 0.82rem; color: var(--text-muted); line-height: 1.5; margin: 0;">
+                  正在檢查遷移狀態...
+                </p>
+
+                <!-- 重要安全提醒 (Google Drive 手動同步指南) -->
+                <div style="background: #FFF9E6; border: 1.5px solid #FFD54F; border-radius: var(--radius-sm); padding: 10px 12px; font-size: 0.78rem; color: #6D4C41; line-height: 1.5;">
+                  <strong>☁️ 重要安全提醒 (Google Drive 同步指南)：</strong><br>
+                  本網站 100% 於您本機 IndexedDB 離線安全運作，<strong>不使用任何雲端資料庫與付費 API</strong>。<br>
+                  為防止瀏覽器快取被清理或更換手機/電腦，<strong>請定期下載 JSON 備份檔，並自行上傳至您的個人 Google Drive 雲端硬碟保存！</strong>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 4px;">
+                  <button id="btnDownloadPreBackup" class="btn-pill-toggle" style="justify-content: center; background: white; border: 1.5px solid var(--accent-color); color: var(--accent-color); font-size: 0.82rem; padding: 8px 12px;">
+                    📥 下載遷移前原始 localStorage 備份 (JSON)
+                  </button>
+                  <button id="btnVerifyDbIntegrity" class="btn-pill-toggle" style="justify-content: center; background: white; font-size: 0.82rem; padding: 8px 12px;">
+                    🔍 檢查 IndexedDB 資料庫健康度 (唯讀安全，不覆蓋資料)
+                  </button>
+                  <button id="btnInspectAnomalies" class="btn-pill-toggle" style="justify-content: center; background: white; font-size: 0.82rem; padding: 8px 12px; color: #C0392B; border: 1.5px solid #E74C3C;">
+                    🧹 檢查現有異常店家資料 (純數字店名、錯位資料)
+                  </button>
+                  <button id="btnForceReimportLocalStorage" class="btn-pill-toggle" style="justify-content: center; background: transparent; border: 1px dashed #C8BDB2; font-size: 0.75rem; color: #8C827A; padding: 6px 10px;">
+                    ⚠️ 從舊 localStorage 強制重新遷移 (慎用：可能帶回已刪除店家)
+                  </button>
+                </div>
+
+                <span style="font-size: 0.75rem; color: #8C827A; line-height: 1.4;">
+                  💡 說明：遷移完成後，<strong>IndexedDB 為唯一正式資料來源</strong>。原始 <code>localStorage</code> 已永久凍結為唯讀備份，絕不持續雙軌寫入。
+                </span>
+              </div>
+
               <!-- 資料備份管理 -->
               <div>
-                <span class="settings-group-label">💾 資料備份與管理</span>
+                <span class="settings-group-label">💾 資料備份與管理 (Google Drive 同步)</span>
                 <div class="data-mgmt-btns-row">
-                  <button id="btnExportData" class="btn-mgmt">匯出資料</button>
-                  <button id="btnImportData" class="btn-mgmt">匯入資料</button>
+                  <button id="btnExportData" class="btn-mgmt">匯出 JSON 備份</button>
+                  <button id="btnImportData" class="btn-mgmt">匯入 JSON 備份</button>
                   <button id="btnClearAllData" class="btn-mgmt danger">清除所有紀錄</button>
                   <input type="file" id="fileInputImportData" accept=".json" style="display: none;">
                 </div>
@@ -651,11 +718,88 @@
     </div>
   </div>
 
-  <!-- Leaflet JS (無需 API Key 的真實高精確圖台) -->
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
-  
+  <!-- ========================================================
+       彈窗：CSV / Takeout 匯入預覽與欄位對應 Modal
+       ======================================================== -->
+  <div id="modalCsvPreview" class="modal-overlay">
+    <div class="modal-card" style="max-width: 680px; width: 95%;">
+      <button class="modal-close-btn">&times;</button>
+      <h3 style="font-size: 1.25rem; font-weight: 800; margin-bottom: 12px; display: flex; align-items: center; gap: 8px;">
+        <span>📊</span> 匯入資料預覽與確認
+      </h3>
+      
+      <!-- 檔案與來源資訊列 -->
+      <div id="csvFileInfoBar" style="background: var(--bg-secondary); padding: 10px 14px; border-radius: var(--radius-md); font-size: 0.85rem; display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+        <span id="csvFileNameText">檔案名稱：</span>
+        <span id="csvFileTypeBadge" class="brand-badge" style="font-size: 0.75rem;">自動辨識中</span>
+      </div>
+
+      <!-- 欄位對應區塊 (手動或自動對應) -->
+      <div id="csvMappingSection" style="margin-bottom: 14px; background: #FFFDF9; border: 1.5px solid var(--border-color); border-radius: var(--radius-md); padding: 14px;">
+        <div style="font-weight: 700; font-size: 0.88rem; margin-bottom: 8px; color: var(--text-main); display: flex; align-items: center; justify-content: space-between;">
+          <span>🎯 欄位對應設定</span>
+          <span style="font-size: 0.78rem; font-weight: normal; color: var(--text-muted);">請確認或調整各欄位對應</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; font-size: 0.82rem;">
+          <div>
+            <label style="display: block; font-weight: 600; margin-bottom: 4px;">店名欄位 <span style="color: #E76F51;">*必選</span></label>
+            <select id="mapColName" class="filter-select" style="padding: 6px; font-size: 0.82rem;"></select>
+          </div>
+          <div>
+            <label style="display: block; font-weight: 600; margin-bottom: 4px;">地址欄位 (自動推導行政區)</label>
+            <select id="mapColAddress" class="filter-select" style="padding: 6px; font-size: 0.82rem;"></select>
+          </div>
+          <div>
+            <label style="display: block; font-weight: 600; margin-bottom: 4px;">備註 / 描述欄位</label>
+            <select id="mapColNote" class="filter-select" style="padding: 6px; font-size: 0.82rem;"></select>
+          </div>
+          <div>
+            <label style="display: block; font-weight: 600; margin-bottom: 4px;">Google 地圖網址欄位</label>
+            <select id="mapColUrl" class="filter-select" style="padding: 6px; font-size: 0.82rem;"></select>
+          </div>
+        </div>
+      </div>
+
+      <!-- 統計摘要與提示 (有效筆數、重複筆數、無效/錯誤筆數) -->
+      <div id="csvSummaryStats" style="display: flex; gap: 8px; margin-bottom: 12px; font-size: 0.8rem; flex-wrap: wrap;">
+        <!-- 動態填入 -->
+      </div>
+
+      <!-- 錯誤/異常提示框 (若有純數字店名或無法辨識項目) -->
+      <div id="csvErrorNotice" style="display: none; background: #FFF0F0; border: 1.5px solid #F8D7DA; border-radius: var(--radius-sm); padding: 10px 12px; font-size: 0.8rem; color: #721C24; margin-bottom: 12px; line-height: 1.5;">
+      </div>
+
+      <!-- 預覽表格 -->
+      <div style="max-height: 200px; overflow-y: auto; border: 1.5px solid var(--border-color); border-radius: var(--radius-md); margin-bottom: 16px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8rem; text-align: left;">
+          <thead style="background: var(--bg-secondary); position: sticky; top: 0;">
+            <tr>
+              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">狀態</th>
+              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">店名</th>
+              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">行政區</th>
+              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">地址</th>
+              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">來源</th>
+            </tr>
+          </thead>
+          <tbody id="csvPreviewTableBody">
+            <!-- 動態填入 -->
+          </tbody>
+        </table>
+      </div>
+
+      <!-- 操作按鈕列 -->
+      <div style="display: flex; gap: 10px; justify-content: flex-end;">
+        <button id="btnCancelCsvImport" class="btn-mgmt" style="flex: none; padding: 9px 18px;">取消</button>
+        <button id="btnConfirmCsvImport" class="btn-draw-main" style="flex: none; padding: 9px 24px; font-size: 0.95rem;">
+          💾 確認寫入資料庫
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- App Data & Scripts -->
   <script src="./data.js"></script>
+  <script src="./db.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

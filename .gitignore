@@ -17,3 +17,8 @@ yarn-error.log*
 
 # Vercel
 .vercel
+
+# Temporary bridge and test files
+powershell.bat
+test.txt
+test.html
