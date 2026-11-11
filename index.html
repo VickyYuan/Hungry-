@@ -260,6 +260,8 @@
                         <span style="color: var(--text-light);">•</span>
                         <span id="destinyArea" style="font-weight: 700; color: var(--text-muted);">西屯區</span>
                         <span style="color: var(--text-light);">•</span>
+                        <span id="destinyCategory" style="font-weight: 700; color: var(--accent-color); background: rgba(255, 107, 107, 0.08); padding: 2px 8px; border-radius: 4px;">🍲 義式</span>
+                        <span style="color: var(--text-light);">•</span>
                         <span id="destinyPrice" style="color: var(--accent-color); font-weight: 800;">約 $220/人</span>
                       </div>
                     </div>
@@ -638,7 +640,47 @@
       <p id="detailModalPrice" style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 4px;"></p>
       <p id="detailModalAddress" style="color: var(--text-muted); font-size: 0.9rem; margin-bottom: 4px;"></p>
       <p id="detailModalHours" style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;"></p>
-      <p id="detailModalDesc" style="color: var(--text-main); line-height: 1.6; font-size: 0.92rem; margin-bottom: 20px;"></p>
+      <p id="detailModalDesc" style="color: var(--text-main); line-height: 1.6; font-size: 0.92rem; margin-bottom: 16px;"></p>
+      
+      <!-- 快速編輯行政區與料理類型 -->
+      <div id="detailEditSection" style="background: var(--bg-secondary); border-radius: var(--radius-md); padding: 14px; margin-bottom: 16px; border: 1px solid var(--border-color);">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+          <span style="font-size: 0.88rem; font-weight: 800; color: var(--text-main);">✏️ 編輯店家資訊</span>
+          <span id="detailEditStatus" style="font-size: 0.78rem; color: var(--text-muted);">可隨時自訂與變更</span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px;">
+          <div>
+            <label for="detailEditDistrict" style="display: block; font-size: 0.78rem; font-weight: 700; margin-bottom: 4px; color: var(--text-muted);">📍 行政區</label>
+            <select id="detailEditDistrict" class="filter-select" style="width: 100%; padding: 6px 10px; font-size: 0.85rem;">
+              <option value="待確認">待確認</option>
+            </select>
+          </div>
+          <div>
+            <label for="detailEditCategory" style="display: block; font-size: 0.78rem; font-weight: 700; margin-bottom: 4px; color: var(--text-muted);">🍲 料理類型</label>
+            <input type="text" id="detailEditCategory" class="filter-select" list="cuisineCategoryOptions" style="width: 100%; padding: 6px 10px; font-size: 0.85rem;" placeholder="如：拉麵、牛排、咖啡廳">
+            <datalist id="cuisineCategoryOptions">
+              <option value="拉麵">
+              <option value="牛排">
+              <option value="燒肉">
+              <option value="火鍋">
+              <option value="咖啡廳">
+              <option value="日式">
+              <option value="義式">
+              <option value="中式">
+              <option value="韓式">
+              <option value="美式">
+              <option value="泰式">
+              <option value="飲品・輕食">
+              <option value="小吃">
+              <option value="待分類">
+            </datalist>
+          </div>
+        </div>
+        <button type="button" id="btnSaveDetailEdit" class="btn-primary" style="width: 100%; padding: 8px 12px; font-size: 0.88rem; font-weight: 700; border-radius: var(--radius-sm); justify-content: center;">
+          💾 儲存修改至資料庫
+        </button>
+      </div>
+
       <a id="detailModalGoogleLink" href="#" target="_blank" class="btn-card-action btn-google-nav" style="text-align: center; text-decoration: none;">
         🧭 在 Google Maps 中開啟導航與查看地標
       </a>
@@ -758,6 +800,10 @@
             <select id="mapColUrl" class="filter-select" style="padding: 6px; font-size: 0.82rem;"></select>
           </div>
         </div>
+        <div style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border-color);">
+          <label style="display: block; font-weight: 600; margin-bottom: 4px; font-size: 0.82rem;">📁 匯入目標清單 (可選現有清單或以檔名建立新清單)</label>
+          <select id="mapTargetList" class="filter-select" style="padding: 6px; font-size: 0.82rem; width: 100%;"></select>
+        </div>
       </div>
 
       <!-- 統計摘要與提示 (有效筆數、重複筆數、無效/錯誤筆數) -->
@@ -777,8 +823,8 @@
               <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">狀態</th>
               <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">店名</th>
               <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">行政區</th>
-              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">地址</th>
-              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">來源</th>
+              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">料理類型</th>
+              <th style="padding: 8px; border-bottom: 1px solid var(--border-color);">目標清單</th>
             </tr>
           </thead>
           <tbody id="csvPreviewTableBody">
