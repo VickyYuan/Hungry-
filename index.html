@@ -135,9 +135,14 @@
                       <button type="button" id="btnDistrictPopular" class="district-quick-btn">常用熱門區</button>
                     </div>
                     <div id="districtChipsContainer" class="district-chips-grid">
-                      <!-- 由 JS 動態生成 29 區與其他地區 -->
+                      <!-- 由 JS 動態生成台中 29 區 -->
                     </div>
                   </div>
+                  <!-- 指定行政區時才顯示：是否納入地區待確認店家 (預設不勾選) -->
+                  <label id="wrapIncludePendingDistrict" class="filter-optin-check" style="display: none;">
+                    <input type="checkbox" id="chkIncludePendingDistrict">
+                    <span>包含地區待確認店家 <em id="pendingDistrictCount"></em></span>
+                  </label>
                 </div>
 
                 <div class="filter-item">
@@ -154,15 +159,14 @@
                 <div class="filter-item">
                   <label for="filterCategory">🍲 料理類別</label>
                   <select id="filterCategory" class="filter-select">
-                    <option value="全部">不限種類</option>
-                    <option value="日式">日式料理</option>
-                    <option value="義式">義大利麵/披薩</option>
-                    <option value="中式">中式合菜/小吃</option>
-                    <option value="韓式">正宗韓式</option>
-                    <option value="美式">美式漢堡</option>
-                    <option value="火鍋">暖心火鍋</option>
-                    <option value="飲品・輕食">飲品與輕食</option>
+                    <option value="全部">不限料理</option>
+                    <!-- 其餘料理類別由 app.js 依 CUISINE_CATEGORIES 動態產生 -->
                   </select>
+                  <!-- 指定料理時才顯示：是否納入待分類店家 (預設不勾選) -->
+                  <label id="wrapIncludeUncategorized" class="filter-optin-check" style="display: none;">
+                    <input type="checkbox" id="chkIncludeUncategorized">
+                    <span>包含待分類店家 <em id="uncategorizedCount"></em></span>
+                  </label>
                 </div>
 
                 <div class="filter-item">
@@ -243,7 +247,8 @@
               <!-- 命定卡片內容 (抽籤結果) -->
               <div id="destinyCardDisplay" class="destiny-card" style="display: none;">
                 <div class="destiny-img-box">
-                  <img id="destinyImg" class="destiny-img" src="https://images.unsplash.com/photo-1621996346565-e3d5d6281788?w=700" alt="命定美食" loading="lazy">
+                  <img id="destinyImg" class="destiny-img" alt="店家照片" style="display: none;">
+                  <div id="destinyImgPlaceholder" class="destiny-img-placeholder"></div>
                   <div class="destiny-badge-status">
                     <span style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--success-color);"></span>
                     營業中
@@ -633,7 +638,8 @@
     <div class="modal-card">
       <button class="modal-close-btn">&times;</button>
       <div style="height: 200px; border-radius: var(--radius-md); overflow: hidden; margin-bottom: 16px;">
-        <img id="detailModalImg" src="" style="width: 100%; height: 100%; object-fit: cover;" alt="餐廳照片">
+        <img id="detailModalImg" src="" style="width: 100%; height: 100%; object-fit: cover; display: none;" alt="餐廳照片">
+        <div id="detailModalImgPlaceholder" style="width: 100%; height: 100%;"></div>
       </div>
       <h3 id="detailModalTitle" style="font-size: 1.4rem; font-weight: 800; margin-bottom: 6px;"></h3>
       <p id="detailModalRating" style="color: var(--star-color); font-weight: 700; margin-bottom: 4px;"></p>
@@ -659,20 +665,7 @@
             <label for="detailEditCategory" style="display: block; font-size: 0.78rem; font-weight: 700; margin-bottom: 4px; color: var(--text-muted);">🍲 料理類型</label>
             <input type="text" id="detailEditCategory" class="filter-select" list="cuisineCategoryOptions" style="width: 100%; padding: 6px 10px; font-size: 0.85rem;" placeholder="如：拉麵、牛排、咖啡廳">
             <datalist id="cuisineCategoryOptions">
-              <option value="拉麵">
-              <option value="牛排">
-              <option value="燒肉">
-              <option value="火鍋">
-              <option value="咖啡廳">
-              <option value="日式">
-              <option value="義式">
-              <option value="中式">
-              <option value="韓式">
-              <option value="美式">
-              <option value="泰式">
-              <option value="飲品・輕食">
-              <option value="小吃">
-              <option value="待分類">
+              <!-- 由 app.js 依 CUISINE_CATEGORIES 動態產生，與首頁料理選單一致 -->
             </datalist>
           </div>
         </div>
