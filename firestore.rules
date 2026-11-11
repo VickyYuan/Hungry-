@@ -1,0 +1,12 @@
+rules_version = '2';
+
+// 吃什麼？雲端同步安全規則
+// 每位使用者只能讀寫自己 users/{uid} 底下的資料；其他所有路徑一律拒絕。
+// 套用方式：Firebase 控制台 → Firestore → 規則，貼上本檔內容後按「發布」。
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /users/{userId}/{document=**} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+  }
+}
