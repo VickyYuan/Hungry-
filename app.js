@@ -45,6 +45,8 @@ const AppState = {
     selectedDistricts: new Set(['全部']), // 多選行政區 Set
     budget: '150-250',
     category: '全部',
+    includeUncategorized: false,   // 指定料理時，是否一併納入「待分類」店家 (預設不包含)
+    includePendingDistrict: false, // 指定行政區時，是否一併納入「地區待確認」店家 (預設不包含)
     payment: '全部',
     mealTime: '午餐',
     minRating: 4.0
@@ -118,6 +120,108 @@ const SoundEngine = {
     });
   }
 };
+
+// ==========================================================
+// 料理類別統一定義 (首頁篩選、探索快捷分類、佔位圖 emoji 共用)
+// key 與 inferCuisineFromText 的回傳值一致；aliases 收錄示範資料與舊版名稱，
+// 讓「中式」「小吃」「台式/中式」等不同寫法都對應到同一個類別。
+// ==========================================================
+const CUISINE_CATEGORIES = [
+  { key: '台式/中式',     label: '台式・中式・小吃', emoji: '🍚', aliases: ['台式', '中式', '小吃', '台菜', '合菜'] },
+  { key: '日式',          label: '日式料理',         emoji: '🍱', aliases: ['日式', '日本料理', '和食', '壽司', '丼飯', '居酒屋'] },
+  { key: '拉麵',          label: '拉麵',             emoji: '🍜', aliases: ['拉麵', 'ramen'], parents: ['日式'] },
+  { key: '韓式',          label: '韓式料理',         emoji: '🥘', aliases: ['韓式', '韓國料理'] },
+  { key: '燒肉',          label: '燒肉',             emoji: '🍖', aliases: ['燒肉'] },
+  { key: '火鍋',          label: '火鍋・鍋物',       emoji: '🍲', aliases: ['火鍋', '鍋物', '涮涮鍋', '麻辣鍋'] },
+  { key: '義式',          label: '義式・披薩',       emoji: '🍝', aliases: ['義式', '義大利', '披薩', 'pizza'] },
+  { key: '美式',          label: '美式・漢堡',       emoji: '🍔', aliases: ['美式', '漢堡'] },
+  { key: '牛排',          label: '牛排',             emoji: '🥩', aliases: ['牛排'] },
+  { key: '泰式',          label: '泰式料理',         emoji: '🌶️', aliases: ['泰式', '泰國料理'] },
+  { key: '越南菜',        label: '越南菜',           emoji: '🍜', aliases: ['越南', '越式'] },
+  { key: '印度菜',        label: '印度菜',           emoji: '🍛', aliases: ['印度'] },
+  { key: '港式點心',      label: '港式・點心',       emoji: '🥟', aliases: ['港式', '飲茶'] },
+  { key: '咖啡廳',        label: '咖啡廳',           emoji: '☕', aliases: ['咖啡'] },
+  { key: '甜點/飲品',     label: '甜點・飲品・輕食', emoji: '🍰', aliases: ['甜點', '飲品', '輕食', '下午茶'] },
+  { key: '自助餐/吃到飽', label: '自助餐・吃到飽',   emoji: '🍽️', aliases: ['自助餐', '吃到飽', 'buffet'] }
+];
+
+// 代表「尚未分類」的 category 值 (匯入時的預設或舊版佔位字串)
+const UNCATEGORIZED_VALUES = ['', '待分類', 'Google收藏', '自訂匯入', '美食', '美味料理'];
+// 代表「地區待確認」的 district 值
+const PENDING_DISTRICT_VALUES = ['', '待確認', '其他', '未知'];
+
+function isUncategorizedPlace(r) {
+  const cat = (r && typeof r.category === 'string') ? r.category.trim() : '';
+  return UNCATEGORIZED_VALUES.includes(cat);
+}
+
+function isPendingDistrictPlace(r) {
+  const d = (r && (r.district || r.area)) || '';
+  return PENDING_DISTRICT_VALUES.includes(String(d).trim());
+}
+
+// 將店家的 category 字串對應到統一類別 key 的集合。
+// 只比對使用者/系統「已標註的類別文字」，不從店名猜測；無法對應者回傳空集合。
+function getCuisineKeys(r) {
+  const keys = new Set();
+  if (!r || isUncategorizedPlace(r)) return keys;
+  const cat = String(r.category).toLowerCase();
+  CUISINE_CATEGORIES.forEach(c => {
+    if (cat === c.key.toLowerCase() || c.aliases.some(a => cat.includes(a.toLowerCase()))) {
+      keys.add(c.key);
+      (c.parents || []).forEach(p => keys.add(p));
+    }
+  });
+  return keys;
+}
+
+// 將快捷分類值 (如「中式」) 轉為統一類別 key；非料理類別則回傳 null
+function resolveCuisineKey(value) {
+  if (!value) return null;
+  const exact = CUISINE_CATEGORIES.find(c => c.key === value);
+  if (exact) return exact.key;
+  const byAlias = CUISINE_CATEGORIES.find(c => c.aliases.includes(value));
+  return byAlias ? byAlias.key : null;
+}
+
+// 取得店家「主要」料理類別：以類別文字中最先出現的名稱為準 (如「火鍋・台式」→ 火鍋)
+function getPrimaryCuisine(r) {
+  if (!r || isUncategorizedPlace(r)) return null;
+  const cat = String(r.category).toLowerCase();
+  let best = null;
+  let bestPos = Infinity;
+  CUISINE_CATEGORIES.forEach(c => {
+    [c.key, ...c.aliases].forEach(name => {
+      const pos = cat.indexOf(name.toLowerCase());
+      if (pos !== -1 && pos < bestPos) { best = c; bestPos = pos; }
+    });
+  });
+  return best;
+}
+
+function getCuisineEmoji(r) {
+  const primary = getPrimaryCuisine(r);
+  return primary ? primary.emoji : '🍽️';
+}
+
+// 只有明確提供、且非通用圖庫 (Unsplash) 的照片才視為店家真實照片
+function hasRealStorePhoto(r) {
+  return !!(r && typeof r.photo === 'string' && r.photo.trim() && !/unsplash\.com/i.test(r.photo));
+}
+
+function escapeHtml(str) {
+  return String(str == null ? '' : str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// 無實景照片時的奶油色系 emoji 佔位圖 (首頁、探索、收藏、詳情共用)
+function buildPhotoPlaceholderHtml(r, size = 'md') {
+  return `<div class="photo-placeholder-box photo-placeholder-${size}" role="img" aria-label="${escapeHtml((r && r.name) || '店家')}：無店家實景照片">
+    <span class="photo-placeholder-emoji">${getCuisineEmoji(r)}</span>
+    <span class="photo-placeholder-note">無店家實景照片</span>
+  </div>`;
+}
 
 // ==========================================================
 // 初始化與資料載入 (使用 IndexedDB 作為主要儲存，並支援安全遷移)
@@ -374,8 +478,27 @@ function bindHomeEvents() {
       });
     }
   };
+  populateCategoryFilterOptions();
   bindFilter('filterBudget', 'budget');
   bindFilter('filterCategory', 'category');
+
+  // 「包含待分類店家」「包含地區待確認店家」勾選 (預設皆不勾選)
+  const chkUncat = document.getElementById('chkIncludeUncategorized');
+  if (chkUncat) {
+    chkUncat.checked = !!AppState.homeFilter.includeUncategorized;
+    chkUncat.addEventListener('change', (e) => {
+      AppState.homeFilter.includeUncategorized = e.target.checked;
+      updateCandidateCountUI();
+    });
+  }
+  const chkPending = document.getElementById('chkIncludePendingDistrict');
+  if (chkPending) {
+    chkPending.checked = !!AppState.homeFilter.includePendingDistrict;
+    chkPending.addEventListener('change', (e) => {
+      AppState.homeFilter.includePendingDistrict = e.target.checked;
+      updateCandidateCountUI();
+    });
+  }
   bindFilter('filterPayment', 'payment');
   bindFilter('filterMealTime', 'mealTime');
   bindFilter('filterRating', 'minRating');
@@ -418,6 +541,40 @@ function bindHomeEvents() {
   }
 }
 
+// 依統一料理類別產生首頁「料理類別」選單 (保留「不限料理」為第一項)
+function populateCategoryFilterOptions() {
+  const select = document.getElementById('filterCategory');
+  if (!select) return;
+  const current = AppState.homeFilter.category || '全部';
+  select.innerHTML = '<option value="全部">不限料理</option>';
+  CUISINE_CATEGORIES.forEach(c => {
+    const opt = document.createElement('option');
+    opt.value = c.key;
+    opt.textContent = `${c.emoji} ${c.label}`;
+    select.appendChild(opt);
+  });
+  // 詳情彈窗「料理類型」建議清單與首頁選單使用同一份類別名稱
+  const datalist = document.getElementById('cuisineCategoryOptions');
+  if (datalist) {
+    datalist.innerHTML = '';
+    [...CUISINE_CATEGORIES.map(c => c.key), '待分類'].forEach(v => {
+      const opt = document.createElement('option');
+      opt.value = v;
+      datalist.appendChild(opt);
+    });
+  }
+  // 舊版選項值 (如「中式」「飲品・輕食」) 自動對應到新類別
+  const resolved = current === '全部' ? '全部' : (resolveCuisineKey(current) || '全部');
+  select.value = resolved;
+  AppState.homeFilter.category = resolved;
+}
+
+// 是否有指定特定行政區 (全部或未選任何區 = 不限地區)
+function hasSpecificDistrictFilter(f) {
+  const s = f.selectedDistricts;
+  return !!(s && s.size > 0 && !s.has('全部'));
+}
+
 // ==========================================================
 // 地區多選元件邏輯 (支援台中 29 區 + 全選 + 常用區)
 // ==========================================================
@@ -437,13 +594,7 @@ function initDistrictSelector() {
     container.appendChild(chip);
   });
 
-  // 加入其他/待確認選項
-  const otherChip = document.createElement('div');
-  otherChip.className = 'district-chip';
-  otherChip.dataset.district = '待確認';
-  otherChip.textContent = '待確認/其他';
-  otherChip.addEventListener('click', () => toggleDistrict('待確認'));
-  container.appendChild(otherChip);
+  // 「地區待確認」店家改由地區選單下方的「包含地區待確認店家」勾選控制
 
   // 綁定下拉面板開關
   const toggleBtn = document.getElementById('btnDistrictToggle');
@@ -485,7 +636,7 @@ function renderDistrictSelectorUI() {
   if (s.has('全部') || s.size >= allDistricts.length) {
     if (textEl) textEl.textContent = '全部地區 (29區)';
   } else if (s.size === 0) {
-    if (textEl) textEl.textContent = '未選擇地區 (點擊選取)';
+    if (textEl) textEl.textContent = '不限地區 (點擊選取)';
   } else if (s.size <= 2) {
     if (textEl) textEl.textContent = Array.from(s).join(', ');
   } else {
@@ -533,6 +684,8 @@ function updateCandidateCountUI() {
   const hintEl = document.getElementById('candidateStatusHint');
   const diagEl = document.getElementById('candidateDiagnosticText');
   const barEl = document.getElementById('candidatePoolBar');
+
+  updateFilterOptInUI();
   if (!countEl) return;
 
   const candidates = getEligibleCandidates();
@@ -544,6 +697,7 @@ function updateCandidateCountUI() {
     if (hintEl) hintEl.textContent = '⚠️ 無符合店家';
     if (diagEl) {
       diagEl.style.display = 'block';
+      diagEl.style.whiteSpace = 'pre-line';
       diagEl.textContent = getDiagnosticSuggestions();
     }
   } else if (count === 1) {
@@ -557,21 +711,86 @@ function updateCandidateCountUI() {
   }
 }
 
-// 分析過嚴條件並給予具體放寬建議
+// 只在有指定料理／行政區時顯示對應的「包含待分類／地區待確認」勾選，並標示可增加的店家數
+function updateFilterOptInUI() {
+  const f = AppState.homeFilter;
+
+  const wrapUncat = document.getElementById('wrapIncludeUncategorized');
+  if (wrapUncat) {
+    const show = f.category !== '全部';
+    wrapUncat.style.display = show ? 'flex' : 'none';
+    const countEl = document.getElementById('uncategorizedCount');
+    if (countEl) {
+      const n = show ? AppState.restaurants.filter(isUncategorizedPlace).length : 0;
+      countEl.textContent = `(${n} 間)`;
+    }
+  }
+
+  const wrapPending = document.getElementById('wrapIncludePendingDistrict');
+  if (wrapPending) {
+    const show = hasSpecificDistrictFilter(f);
+    wrapPending.style.display = show ? 'flex' : 'none';
+    const countEl = document.getElementById('pendingDistrictCount');
+    if (countEl) {
+      const n = show ? AppState.restaurants.filter(isPendingDistrictPlace).length : 0;
+      countEl.textContent = `(${n} 間)`;
+    }
+  }
+}
+
+// 候選為 0 時：逐一試著放寬每個條件，找出「哪個條件造成 0 間」以及「放寬後會有幾間」
 function getDiagnosticSuggestions() {
   const f = AppState.homeFilter;
-  const suggestions = [];
 
-  if (f.source === 'favs') suggestions.push('目前為「我的口袋名單」，名單內店家較少');
-  if (!f.selectedDistricts.has('全部')) suggestions.push(`地區限制在 [${Array.from(f.selectedDistricts).join('/')}]`);
-  if (f.category !== '全部') suggestions.push(`料理類別限制為「${f.category}」`);
-  if (f.budget !== '不限') suggestions.push(`預算區間設為「${f.budget}」`);
-  if (Number(f.minRating) > 0) suggestions.push(`品質限制在 ${f.minRating} 星以上`);
-  if (f.payment !== '全部') suggestions.push(`付款方式限制為「${f.payment}」`);
-  if (f.mealTime && f.mealTime !== '午餐') suggestions.push(`時段選在「${f.mealTime}」`);
+  if (AppState.restaurants.length === 0) {
+    return '目前店家名冊是空的。請先到「收藏」或「設定」匯入 Google Maps 收藏清單。';
+  }
+  if (f.source === 'favs' && !AppState.restaurants.some(r => r.isFavorite)) {
+    return '目前選擇「我的口袋名單」，但名單內還沒有店家。可切換為「全部店家」，或先到探索頁加入收藏。';
+  }
 
-  if (suggestions.length === 0) return '建議新增更多口袋店家或放寬偏好設定！';
-  return '可能過嚴的條件：' + suggestions.join('、') + '。建議放寬條件再試一次！';
+  const relaxations = [];
+  const tryRelax = (label, override) => {
+    const n = getEligibleCandidates(override).length;
+    if (n > 0) relaxations.push({ label, n });
+  };
+
+  if (f.source === 'favs') tryRelax('改為「全部店家」', { source: 'cloud' });
+  if (hasSpecificDistrictFilter(f)) {
+    if (!f.includePendingDistrict) tryRelax('勾選「包含地區待確認店家」', { includePendingDistrict: true });
+    tryRelax('地區改為「全部地區」', { selectedDistricts: new Set(['全部']) });
+  }
+  if (f.category !== '全部') {
+    if (!f.includeUncategorized) tryRelax('勾選「包含待分類店家」', { includeUncategorized: true });
+    tryRelax('料理改為「不限料理」', { category: '全部' });
+  }
+  if (f.budget !== '不限') tryRelax('預算改為「不限預算」', { budget: '不限' });
+  if (Number(f.minRating) > 0) tryRelax('店家品質改為「不限評分」', { minRating: '0' });
+  if (f.payment !== '全部') tryRelax('付款方式改為「不限方式」', { payment: '全部' });
+  if (f.mealTime === '早餐' || f.mealTime === '宵夜') tryRelax('用餐時間改為「午餐」', { mealTime: '午餐' });
+  if (f.excludeEaten) tryRelax('暫時關閉「排除吃過的餐廳」', { excludeEaten: false });
+
+  // 目前條件的摘要 (讓使用者知道是哪些條件同時生效)
+  const active = [];
+  if (f.source === 'favs') active.push('我的口袋名單');
+  if (hasSpecificDistrictFilter(f)) active.push(`地區：${Array.from(f.selectedDistricts).join('、')}`);
+  if (f.category !== '全部') {
+    const c = CUISINE_CATEGORIES.find(x => x.key === f.category);
+    active.push(`料理：${c ? c.label : f.category}`);
+  }
+  if (f.budget !== '不限') active.push(`預算：${f.budget}`);
+  if (Number(f.minRating) > 0) active.push(`${f.minRating} 星以上`);
+  if (f.payment !== '全部') active.push(`付款：${f.payment}`);
+  if (f.mealTime) active.push(`時段：${f.mealTime}`);
+
+  let msg = '沒有店家同時符合：' + (active.length ? active.join('／') : '目前條件') + '。';
+  if (relaxations.length > 0) {
+    relaxations.sort((a, b) => b.n - a.n);
+    msg += '\n建議調整（任選一項即可）：\n' + relaxations.slice(0, 4).map(x => `・${x.label} → 可有 ${x.n} 間`).join('\n');
+  } else {
+    msg += '\n單獨放寬任一條件仍找不到店家，建議同時放寬多個條件，或到設定頁檢查「不吃的食材」清單。';
+  }
+  return msg;
 }
 
 // 執行抽籤演算法
@@ -645,8 +864,8 @@ function startDrawFood() {
 }
 
 // 根據條件篩選合適餐廳
-function getEligibleCandidates() {
-  const f = AppState.homeFilter;
+function getEligibleCandidates(overrides = {}) {
+  const f = Object.assign({}, AppState.homeFilter, overrides);
   const settings = AppState.settings;
   const now = new Date();
 
@@ -655,13 +874,24 @@ function getEligibleCandidates() {
     if (f.source === 'favs' && !r.isFavorite) return false;
 
     // 地區多選過濾 (支援台中 29 區 + 全選)
-    if (f.selectedDistricts && !f.selectedDistricts.has('全部')) {
-      const d = r.district || r.area || '待確認';
-      if (!f.selectedDistricts.has(d)) return false;
+    // 未指定地區 (全部／未選) 時，地區待確認的店家照常參與抽選；
+    // 指定地區時，待確認店家只有在勾選「包含地區待確認店家」時才納入。絕不自動替店家填入行政區。
+    if (hasSpecificDistrictFilter(f)) {
+      if (isPendingDistrictPlace(r)) {
+        if (!f.includePendingDistrict) return false;
+      } else if (!f.selectedDistricts.has(r.district || r.area)) {
+        return false;
+      }
     }
 
-    // 料理類別過濾
-    if (f.category !== '全部' && !r.category.includes(f.category)) return false;
+    // 料理類別過濾 (以統一類別比對；待分類店家僅在勾選「包含待分類店家」時納入)
+    if (f.category && f.category !== '全部') {
+      if (isUncategorizedPlace(r)) {
+        if (!f.includeUncategorized) return false;
+      } else if (!getCuisineKeys(r).has(f.category)) {
+        return false;
+      }
+    }
 
     // 評分過濾 (支援未評分店家設定)
     if (Number(f.minRating) > 0) {
@@ -805,8 +1035,16 @@ function renderHomeDestinyCard(restaurant) {
   if (cardBox) cardBox.style.display = 'flex';
   AppState.currentWinner = restaurant;
 
+  // 照片：只顯示明確提供的店家真實照片；否則使用料理 emoji 佔位圖，不以通用圖庫照片冒充
   const imgEl = document.getElementById('destinyImg');
-  if (imgEl) imgEl.src = restaurant.photo || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=700';
+  const phEl = document.getElementById('destinyImgPlaceholder');
+  if (hasRealStorePhoto(restaurant)) {
+    if (imgEl) { imgEl.src = restaurant.photo; imgEl.alt = restaurant.name; imgEl.style.display = 'block'; }
+    if (phEl) { phEl.innerHTML = ''; phEl.style.display = 'none'; }
+  } else {
+    if (imgEl) { imgEl.removeAttribute('src'); imgEl.style.display = 'none'; }
+    if (phEl) { phEl.innerHTML = buildPhotoPlaceholderHtml(restaurant, 'lg'); phEl.style.display = 'block'; }
+  }
   document.getElementById('destinyName').textContent = restaurant.name;
 
   // 評分顯示 (無資料時顯示待評分，不塞假星等)
@@ -946,7 +1184,10 @@ function renderExploreList() {
     if (tag === 'rating' && (r.rating == null || r.rating < 4.5)) return false;
     if (tag === 'price' && (r.avgPrice == null || r.avgPrice > 250)) return false;
     if (tag !== '全部' && tag !== 'rating' && tag !== 'price') {
-      if ((!r.category || !r.category.includes(tag)) && (!r.tags || !r.tags.includes(tag))) return false;
+      // 料理快捷分類以統一類別比對 (例如「中式」同時涵蓋 中式／台式／小吃)
+      const cuisineKey = resolveCuisineKey(tag);
+      const matchCuisine = cuisineKey ? getCuisineKeys(r).has(cuisineKey) : (r.category && r.category.includes(tag));
+      if (!matchCuisine && (!Array.isArray(r.tags) || !r.tags.includes(tag))) return false;
     }
 
     return true;
@@ -982,8 +1223,10 @@ function renderExploreList() {
 
     card.innerHTML = `
       <div class="explore-card-thumb-wrap">
-        <img class="explore-card-thumb" src="${r.photo || 'https://images.unsplash.com/photo-1555396273-367ea4eb4db5?w=700'}" alt="${r.name}" loading="lazy">
-        <span class="explore-card-cat-pill">${r.category || '美味料理'}</span>
+        ${hasRealStorePhoto(r)
+          ? `<img class="explore-card-thumb" src="${escapeHtml(r.photo)}" alt="${escapeHtml(r.name)}" loading="lazy">`
+          : buildPhotoPlaceholderHtml(r, 'md')}
+        <span class="explore-card-cat-pill">${isUncategorizedPlace(r) ? '待分類' : escapeHtml(r.category)}</span>
         <button class="btn-heart-favorite ${r.isFavorite ? 'active' : ''}" data-id="${r.id}" title="收藏到口袋名單">
           ${r.isFavorite ? '❤️' : '🤍'}
         </button>
@@ -1146,15 +1389,10 @@ function renderFavoritesView() {
     card.className = 'fav-card';
     const googleNavUrl = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(r.name + ' ' + (r.address || ''))}`;
     
-    const cuisineEmojis2 = { '拉麵':'🍜', '牛排':'🥩', '燒肉':'🍖', '火鍋':'🍲', '咖啡廳':'☕',
-      '日式':'🍱', '義式':'🍝', '韓式':'🥘', '美式':'🍔', '泰式':'🌶️',
-      '越南菜':'🍜', '印度菜':'🍛', '港式點心':'🥟', '台式/中式':'🍚', '甜點/飲品':'🍰', '自助餐/吃到飽':'🍽️' };
-    const favCatEmoji = cuisineEmojis2[r.category] || '🍽️';
-    const hasRealFavPhoto = r.photo && !r.photo.includes('unsplash');
-    const favImgHtml = hasRealFavPhoto
-      ? `<img class="fav-card-img" src="${r.photo}" alt="${r.name}" loading="lazy">`
-      : `<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;font-size:3.5rem;background:linear-gradient(135deg,#f5f5f0,#e8e4da);" aria-label="無店家照片">${favCatEmoji}</div>`;
-    const favCatDisplay = r.category && r.category !== '待分類' ? r.category : '';
+    const favImgHtml = hasRealStorePhoto(r)
+      ? `<img class="fav-card-img" src="${escapeHtml(r.photo)}" alt="${escapeHtml(r.name)}" loading="lazy">`
+      : buildPhotoPlaceholderHtml(r, 'md');
+    const favCatDisplay = isUncategorizedPlace(r) ? '' : r.category;
     const favDesc = (r.notes || r.description || '').slice(0, 48);
 
     card.innerHTML = `
@@ -1725,23 +1963,27 @@ function extractDistrictFromText(text) {
 }
 
 // 料理類型推導：依店名關鍵字初步辨識，無法辨識時回傳「待分類」
+// 回傳值必須是 CUISINE_CATEGORIES 中的 key 或「待分類」。
+// 只保留意義明確的關鍵字：已移除容易誤判的單字或泛用詞
+// (「泰」會誤中國泰／泰安、「炭燒」會誤中炭燒咖啡、「咖哩」多為日式咖哩、
+//  「法國麵包」多為麵包店、「台灣」常出現在地址或備註、英文「pho」會誤中 Sophie 等字)，寧可留在待分類。
 function inferCuisineFromText(name, note) {
   const text = ((name || '') + ' ' + (note || '')).toLowerCase();
   const rules = [
     { keywords: ['拉麵', 'らーめん', 'ramen'], label: '拉麵' },
     { keywords: ['牛排', '鐵板牛', 'steak', 'steakhouse'], label: '牛排' },
-    { keywords: ['燒肉', 'yakiniku', '烤肉', '炭燒'], label: '燒肉' },
+    { keywords: ['燒肉', 'yakiniku', '烤肉'], label: '燒肉' },
     { keywords: ['火鍋', '涮涮鍋', '鍋物', '麻辣鍋', '壽喜燒', 'shabu'], label: '火鍋' },
     { keywords: ['咖啡', 'cafe', 'coffee', '珈琲', 'caffe', '咖啡廳', '咖啡館'], label: '咖啡廳' },
     { keywords: ['壽司', '握壽司', '迴轉壽司', '丼飯', '丼', '居酒屋', '天婦羅', '和食', '日式', '拉麵'], label: '日式' },
     { keywords: ['義大利', '義式', 'pizza', '披薩', 'pasta', '義麵', 'risotto', 'gelato'], label: '義式' },
     { keywords: ['韓式', '韓國', '泡菜', '韓風', 'korean', '部隊鍋', '辣炒年糕'], label: '韓式' },
     { keywords: ['美式', '漢堡', 'burger', 'brunch', '早午餐', 'bbq', '炸雞', 'fried chicken'], label: '美式' },
-    { keywords: ['泰式', '泰國', 'thai', '打拋', '泰', '冬蔭功'], label: '泰式' },
-    { keywords: ['越南', '河粉', '越式', '法國麵包', 'pho', 'banh mi'], label: '越南菜' },
-    { keywords: ['印度', '咖哩', 'curry', 'indian', 'naan'], label: '印度菜' },
+    { keywords: ['泰式', '泰國', 'thai', '打拋', '冬蔭功'], label: '泰式' },
+    { keywords: ['越南', '河粉', '越式', 'banh mi'], label: '越南菜' },
+    { keywords: ['印度', 'indian', 'naan'], label: '印度菜' },
     { keywords: ['小籠包', '點心', '港式', '飲茶', '茶樓'], label: '港式點心' },
-    { keywords: ['火雞', '豬腳', '蚵仔', '肉圓', '魯目魚', '筒仔米糕', '滷肉飯', '牛肉麵', '控肉', '小吃', '夜市', '台式', '台灣', '中式', '合菜'], label: '台式/中式' },
+    { keywords: ['火雞', '豬腳', '蚵仔', '肉圓', '魯目魚', '筒仔米糕', '滷肉飯', '牛肉麵', '控肉', '小吃', '夜市', '台式', '中式', '合菜'], label: '台式/中式' },
     { keywords: ['甜點', '蛋糕', '下午茶', '馬卡龍', '蛋撻', '冰淇淋', '霜淇淋', '冰品', '剉冰'], label: '甜點/飲品' },
     { keywords: ['自助', '百匯', 'buffet', '吃到飽'], label: '自助餐/吃到飽' },
   ];
@@ -2554,36 +2796,17 @@ function showRestaurantDetailModal(r) {
   const modal = document.getElementById('modalRestDetail');
   if (!modal) return;
 
-  // 照片：若無真實照片(null / 預設 unsplash)則不顯示誤導性圖片，用中性色塊+emoji
+  // 照片：只顯示明確提供的店家真實照片；否則使用與其他頁面一致的料理 emoji 佔位圖
   const imgEl = document.getElementById('detailModalImg');
-  const hasRealPhoto = r.photo && !r.photo.includes('unsplash');
-  if (hasRealPhoto) {
+  const phEl = document.getElementById('detailModalImgPlaceholder');
+  if (hasRealStorePhoto(r)) {
     imgEl.src = r.photo;
     imgEl.style.display = 'block';
-    imgEl.parentElement.style.background = '';
-    imgEl.parentElement.querySelector && (imgEl.parentElement.querySelector('.photo-placeholder') && (imgEl.parentElement.querySelector('.photo-placeholder').style.display = 'none'));
+    if (phEl) { phEl.innerHTML = ''; phEl.style.display = 'none'; }
   } else {
+    imgEl.removeAttribute('src');
     imgEl.style.display = 'none';
-    // 顯示中性色塊 + 料理 emoji
-    const cuisineEmojis = { '拉麵':'🍜', '牛排':'🥩', '燒肉':'🍖', '火鍋':'🍲', '咖啡廳':'☕',
-      '日式':'🍱', '義式':'🍝', '韓式':'🥘', '美式':'🍔', '泰式':'🌶️',
-      '越南菜':'🍜', '印度菜':'🍛', '港式點心':'🥟', '台式/中式':'🍚', '甜點/飲品':'🍰', '自助餐/吃到飽':'🍽️' };
-    const emoji = cuisineEmojis[r.category] || '🍽️';
-    imgEl.parentElement.style.background = 'linear-gradient(135deg, #f5f5f0, #e8e4da)';
-    imgEl.parentElement.style.display = 'flex';
-    imgEl.parentElement.style.alignItems = 'center';
-    imgEl.parentElement.style.justifyContent = 'center';
-    imgEl.parentElement.style.fontSize = '5rem';
-    // 清除舊 placeholder 後建立新的
-    let ph = imgEl.parentElement.querySelector('.photo-placeholder');
-    if (!ph) {
-      ph = document.createElement('div');
-      ph.className = 'photo-placeholder';
-      ph.style.cssText = 'font-size: 4rem; text-align: center; line-height: 1; user-select: none;';
-      imgEl.parentElement.appendChild(ph);
-    }
-    ph.textContent = emoji;
-    ph.style.display = 'block';
+    if (phEl) { phEl.innerHTML = buildPhotoPlaceholderHtml(r, 'lg'); phEl.style.display = 'block'; }
   }
 
   document.getElementById('detailModalTitle').textContent = r.name;
@@ -2663,6 +2886,10 @@ function showRestaurantDetailModal(r) {
           AppState.currentWinner = updatedPlace;
           renderHomeDestinyCard(updatedPlace);
         }
+        // 行政區／料理變更後，同步更新首頁候選數與各列表顯示
+        updateCandidateCountUI();
+        renderExploreList();
+        if (AppState.currentTab === 'favorites') renderFavoritesView();
         if (statusEl) statusEl.textContent = '✅ 已儲存！';
         setTimeout(() => { if (statusEl) statusEl.textContent = '可隨時自訂與變更'; }, 2000);
       } catch (err) {
