@@ -1974,3 +1974,38 @@ body.mode-mobile-frame .destiny-actions .btn-card-action {
     font-size: 3.6rem;
   }
 }
+
+/* ==========================================================
+   雲端同步按鈕 + 手機版頂部工具列 (避免按鈕文字被擠成多行)
+   ========================================================== */
+.btn-cloud-sync {
+  white-space: nowrap;
+}
+
+.btn-cloud-sync.active {
+  background: var(--success-color, #58B368);
+  border-color: var(--success-color, #58B368);
+  color: white;
+}
+
+@media (max-width: 600px) {
+  .top-utility-bar {
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px;
+  }
+  .utility-left,
+  .utility-right {
+    width: 100%;
+    justify-content: center;
+  }
+  .utility-right {
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .top-utility-bar .btn-pill-toggle {
+    white-space: nowrap;
+    padding: 5px 10px;
+    font-size: 0.76rem;
+  }
+}

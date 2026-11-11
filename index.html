@@ -29,6 +29,9 @@
         </span>
       </div>
       <div class="utility-right">
+        <button id="btnCloudSync" class="btn-pill-toggle btn-cloud-sync" title="用 Google 帳號登入，讓電腦和手機共用同一份資料">
+          ☁️ 登入雲端同步
+        </button>
         <button id="btnToggleSound" class="btn-pill-toggle" title="切換音效">
           🔔 音效：開
         </button>
@@ -839,6 +842,12 @@
   <!-- App Data & Scripts -->
   <script src="./data.js"></script>
   <script src="./db.js"></script>
+  <!-- 雲端同步 (Firebase Spark 免費方案；SDK 檔案放在專案內，不依賴外部 CDN) -->
+  <script src="./vendor/firebase/firebase-app-compat.js"></script>
+  <script src="./vendor/firebase/firebase-auth-compat.js"></script>
+  <script src="./vendor/firebase/firebase-firestore-compat.js"></script>
+  <script src="./firebase-config.js"></script>
+  <script src="./cloud-sync.js"></script>
   <script src="./app.js"></script>
 </body>
 </html>

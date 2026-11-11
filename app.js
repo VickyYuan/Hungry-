@@ -257,6 +257,9 @@ async function initApp() {
   // 更新遷移與備份狀態 UI
   await updateMigrationUI();
 
+  // 雲端同步 (選用)：本機資料載入完成後才啟動，未登入時不影響任何功能
+  if (window.CloudSync) window.CloudSync.start();
+
   console.log("吃什麼？App 初始化完成 (儲存引擎: IndexedDB)！");
 }
 
@@ -288,14 +291,13 @@ async function loadDataFromIndexedDB() {
   const hist = await DB.getAll('history');
   const lists = await DB.getAll('lists');
   const settingsRecord = await DB.get('settings', 'preferences');
+  const customListsRecord = await DB.get('settings', 'customLists');
 
   if (isInitialized) {
     // 已經初始化過：即使 places 為空，也是使用者的合法狀態（手動刪除），絕不誤判復活預設示範資料！
     AppState.restaurants = places || [];
     AppState.history = hist || [];
-    if (lists && lists.length > 0) {
-      AppState.customLists = lists.map(l => l.name);
-    }
+    AppState.customLists = mergeCustomLists(AppState.customLists, customListsRecord && customListsRecord.value, lists);
     if (settingsRecord && settingsRecord.value) {
       AppState.settings = Object.assign(AppState.settings, settingsRecord.value);
     }
@@ -313,14 +315,22 @@ async function loadDataFromIndexedDB() {
       AppState.history = JSON.parse(JSON.stringify(window.DEFAULT_HISTORY));
     }
 
-    if (lists && lists.length > 0) {
-      AppState.customLists = lists.map(l => l.name);
-    }
+    AppState.customLists = mergeCustomLists(AppState.customLists, customListsRecord && customListsRecord.value, lists);
 
     if (settingsRecord && settingsRecord.value) {
       AppState.settings = Object.assign(AppState.settings, settingsRecord.value);
     }
   }
+}
+
+// 合併清單名稱：保留「全部」與既有清單，加上已儲存的自訂清單與匯入建立的清單 (不重複)
+function mergeCustomLists(current, saved, listRecords) {
+  const names = [
+    '全部',
+    ...(Array.isArray(saved) ? saved : (current || [])),
+    ...((listRecords || []).map(l => l && l.name).filter(Boolean))
+  ];
+  return Array.from(new Set(names));
 }
 
 // 降級載入 (僅在 IndexedDB 完全無法啟動時才作唯讀 fallback 讀取)
@@ -354,6 +364,8 @@ async function saveDataToStorage() {
     await DB.bulkPut('places', AppState.restaurants);
     await DB.bulkPut('history', AppState.history);
     await DB.put('settings', { key: 'preferences', value: AppState.settings });
+    // 自訂清單名稱也要存，否則手動新增的清單重新整理後會消失
+    await DB.put('settings', { key: 'customLists', value: AppState.customLists });
   } catch (err) {
     console.error("寫入 IndexedDB 失敗:", err);
     alert("⚠️ 本機資料庫儲存發生異常：" + err.message + "\n請確認儲存空間是否足夠！");
@@ -1785,6 +1797,11 @@ function bindSettingsEvents() {
         if (!confirm('⚠️ 備份下載失敗。您確定不保留任何備份，直接清除嗎？')) return;
       }
 
+      // 已登入雲端同步時：先登出，只清除這台裝置的資料，雲端資料保留不受影響
+      if (window.CloudSync && window.CloudSync.user) {
+        await window.CloudSync.signOut();
+      }
+
       if (typeof DB !== 'undefined') {
         // 清空業務資料表
         await DB.clear('places');
@@ -1793,6 +1810,7 @@ function bindSettingsEvents() {
         // 只清除偏好設定，保留 initialized 與 migration_meta
         await DB.delete('settings', 'preferences');
         await DB.delete('settings', 'initialized');
+        await DB.delete('settings', 'customLists');
         // 不刪除 migration_meta — 此表保存遷移前完整 localStorage 快照，是最後一道安全防線！
       }
       // localStorage 中的凍結標記也一併清除（重開後可重新遷移）
